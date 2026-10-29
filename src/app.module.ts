@@ -4,6 +4,8 @@ import { DatabaseModule } from './database.module';
 import { AppController } from './app.controller';
 import { UsersModule } from './users/users.module';
 import { SettingsModule } from './settings/settings.module';
+import { PackagesModule } from './packages/packages.module';
+import { AccessModule } from './access/access.module';
 import { AuthModule } from './auth/auth.module';
 
 @Module({
@@ -12,6 +14,8 @@ import { AuthModule } from './auth/auth.module';
     DatabaseModule,
     UsersModule,
     SettingsModule,
+    PackagesModule,
+    AccessModule,
     AuthModule,
   ],
   controllers: [AppController],
