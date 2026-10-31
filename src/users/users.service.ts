@@ -15,7 +15,7 @@ export class UsersService {
 
   findByUsername(username: string): Promise<UserRow | undefined> {
     return this.db.query.users.findFirst({
-      where: eq(users.username, username),
+      where: eq(users.username, username.trim()),
     });
   }
 
@@ -29,4 +29,3 @@ export class UsersService {
       );
   }
 }
-

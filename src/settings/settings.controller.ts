@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ConflictException,
   Delete,
   Get,
   HttpCode,
@@ -19,8 +20,20 @@ import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { access, accessItems, NewUserRow, UserRow, users } from '../schema';
 import { UsersService } from '../users/users.service';
+import { CheckUserAvailabilityDto } from './dto/check-user-availability.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+
+function isUniqueViolation(
+  error: unknown,
+): error is { code: '23505'; constraint?: string } {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === '23505'
+  )
+}
 
 @Controller('settings')
 @UseGuards(JwtGuard, RolesGuard)
@@ -33,6 +46,20 @@ export class SettingsController {
   @Get('users')
   async getUsers() {
     return this.users.findAll();
+  }
+
+  @Post('users/check-availability')
+  @Roles('superadmin')
+  async checkUserAvailability(@Body() dto: CheckUserAvailabilityDto) {
+    const [username, email] = await Promise.all([
+      this.users.findByUsername(dto.username.trim()),
+      this.users.findByEmail(dto.email),
+    ]);
+
+    return {
+      usernameExists: Boolean(username),
+      emailExists: Boolean(email),
+    };
   }
 
   @Post('users')
@@ -84,9 +111,22 @@ export class SettingsController {
       }
       const { passwordHash: _passwordHash, ...rest } = created;
       return rest;
-    } catch (error: any) {
-      if (error?.code === '23505') {
-        throw new BadRequestException('Username or email already exists.');
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        if (error.constraint === 'users_username_unique_idx') {
+          throw new ConflictException({
+            code: 'USERNAME_EXISTS',
+            field: 'username',
+            message: 'Username already exists.',
+          });
+        }
+        if (error.constraint === 'users_email_unique_idx') {
+          throw new ConflictException({
+            code: 'EMAIL_EXISTS',
+            field: 'email',
+            message: 'Email already exists.',
+          });
+        }
       }
       throw error;
     }
