@@ -8,9 +8,9 @@ export const tourPackages = pgTable('tour_packages', {
   totalDays: integer('total_days'),
   price: integer('price'),
   ratings: real('ratings'),
-  image1: text('image1'),
-  image2: text('image2'),
-  image3: text('image3'),
+  image1Id: integer('image1_id'),
+  image2Id: integer('image2_id'),
+  image3Id: integer('image3_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
