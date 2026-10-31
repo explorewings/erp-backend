@@ -7,6 +7,7 @@ import { SettingsModule } from './settings/settings.module';
 import { PackagesModule } from './packages/packages.module';
 import { AccessModule } from './access/access.module';
 import { AuthModule } from './auth/auth.module';
+import { ResortsModule } from './resorts/resorts.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { AuthModule } from './auth/auth.module';
     PackagesModule,
     AccessModule,
     AuthModule,
+    ResortsModule,
   ],
   controllers: [AppController],
 })
