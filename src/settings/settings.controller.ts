@@ -13,11 +13,11 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { DRIZZLE, DrizzleDb } from '../database.module';
-import { NewUserRow, UserRow, users } from '../schema';
+import { access, accessItems, NewUserRow, UserRow, users } from '../schema';
 import { UsersService } from '../users/users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -48,11 +48,37 @@ export class SettingsController {
     };
 
     try {
-      const created = await this.db
-        .insert(users)
-        .values(values)
-        .returning()
-        .then((rows) => rows[0]);
+      const created = await this.db.transaction(async (tx) => {
+        const user = await tx
+          .insert(users)
+          .values(values)
+          .returning()
+          .then((rows) => rows[0]);
+        if (!user) return undefined;
+
+        if (dto.accessCodes !== undefined) {
+          const codes = new Set(
+            dto.accessCodes.filter((code) => /^[a-z0-9:_-]+$/i.test(code)),
+          );
+          const menuItems = await tx
+            .select({ code: accessItems.code })
+            .from(accessItems)
+            .where(and(eq(accessItems.type, 'menu'), eq(accessItems.isActive, true)));
+
+          if (menuItems.length > 0) {
+            await tx.insert(access).values(
+              menuItems.map(({ code }) => ({
+                userId: user.id,
+                code,
+                type: 'menu',
+                allowed: codes.has(code),
+              })),
+            );
+          }
+        }
+
+        return user;
+      });
       if (!created) {
         throw new BadRequestException('Unable to create user.');
       }

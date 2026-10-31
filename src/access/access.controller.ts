@@ -26,8 +26,9 @@ export class AccessController {
     const user = req.user as { id: string; role?: string } | undefined;
     if (!user?.id) return { codes: null };
     if (user.role === 'superadmin' || user.role === 'superuser') return { codes: null };
-    const codes = await this.access.getAllowedCodes(user.id);
-    return { codes: codes.length > 0 ? codes : null };
+    const rows = await this.access.list(user.id);
+    if (rows.length === 0) return { codes: null };
+    return { codes: rows.filter((row) => row.allowed).map((row) => row.code) };
   }
 
   @Get('items')

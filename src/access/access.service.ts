@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { AccessItemRow, AccessRow, NewAccessRow, access, accessItems, users } from '../schema';
 
@@ -19,10 +19,22 @@ export class AccessService {
   }
 
   async replaceForUser(userId: string, codes: string[]): Promise<AccessRow[]> {
-    await this.db.delete(access).where(eq(access.userId, userId));
-    if (codes.length === 0) return [];
-    const values: NewAccessRow[] = codes.map((code) => ({ userId, code, type: 'menu', allowed: true }));
-    return this.db.insert(access).values(values).returning();
+    return this.db.transaction(async (tx) => {
+      await tx.delete(access).where(eq(access.userId, userId));
+      const selected = new Set(codes);
+      const menuItems = await tx
+        .select({ code: accessItems.code })
+        .from(accessItems)
+        .where(and(eq(accessItems.type, 'menu'), eq(accessItems.isActive, true)));
+      if (menuItems.length === 0) return [];
+      const values: NewAccessRow[] = menuItems.map(({ code }) => ({
+        userId,
+        code,
+        type: 'menu',
+        allowed: selected.has(code),
+      }));
+      return tx.insert(access).values(values).returning();
+    });
   }
 
   async listByCode(code: string): Promise<AccessRow[]> {
