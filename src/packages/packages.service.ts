@@ -86,6 +86,76 @@ export class PackagesService {
     return this.findOne(id);
   }
 
+  async remove(id: number): Promise<{ id: number; cleanupWarnings: string[] }> {
+    const deletedRows = await this.db
+      .delete(tourPackages)
+      .where(eq(tourPackages.id, id))
+      .returning({
+        id: tourPackages.id,
+        image1Id: tourPackages.image1Id,
+        image2Id: tourPackages.image2Id,
+        image3Id: tourPackages.image3Id,
+      });
+    const deleted = deletedRows[0];
+    if (!deleted) throw new NotFoundException(`Package ${id} not found`);
+
+    const imageIds = Array.from(
+      new Set([deleted.image1Id, deleted.image2Id, deleted.image3Id].filter((imageId): imageId is number => imageId !== null)),
+    );
+    const cleanupWarnings: string[] = [];
+
+    if (imageIds.length > 0) {
+      const imageRows = await this.db.select().from(images).where(inArray(images.id, imageIds));
+      const references = await this.db
+        .select({
+          image1Id: tourPackages.image1Id,
+          image2Id: tourPackages.image2Id,
+          image3Id: tourPackages.image3Id,
+        })
+        .from(tourPackages)
+        .where(
+          or(
+            inArray(tourPackages.image1Id, imageIds),
+            inArray(tourPackages.image2Id, imageIds),
+            inArray(tourPackages.image3Id, imageIds),
+          ),
+        );
+      const referencedIds = new Set(
+        references.flatMap((row) =>
+          [row.image1Id, row.image2Id, row.image3Id].filter(
+            (imageId): imageId is number => imageId !== null,
+          ),
+        ),
+      );
+      const orphanedImages = imageRows.filter((image) => !referencedIds.has(image.id));
+      const cleanupResults = await Promise.allSettled(
+        orphanedImages.map((image) => this.storage.delete(image.bucket, image.key)),
+      );
+      const successfullyDeletedImageIds: number[] = [];
+
+      cleanupResults.forEach((result, index) => {
+        const image = orphanedImages[index];
+        if (result.status === 'fulfilled') {
+          successfullyDeletedImageIds.push(image.id);
+        } else {
+          cleanupWarnings.push(`Package was deleted, but image ${image.id} could not be removed from storage.`);
+        }
+      });
+
+      if (successfullyDeletedImageIds.length > 0) {
+        try {
+          await this.db.delete(images).where(inArray(images.id, successfullyDeletedImageIds));
+        } catch {
+          cleanupWarnings.push(
+            'Package was deleted and its image files were removed from storage, but some image records could not be removed.',
+          );
+        }
+      }
+    }
+
+    return { id: deleted.id, cleanupWarnings };
+  }
+
   async assignImage(id: number, slot: number, file: { buffer: Buffer; originalname: string; mimetype: string; size: number }) {
     await this.findOne(id);
     const key = `packages/${id}/${slot}-${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;

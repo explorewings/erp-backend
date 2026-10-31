@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   GetObjectCommand,
   HeadObjectCommand,
+  DeleteObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -67,6 +68,11 @@ export class StorageService {
       }),
     );
     return { key, size: body.byteLength, contentType };
+  }
+
+  async delete(bucket: string, key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    this.presignCache.delete(key);
   }
 
   /** True when the object already exists (used by the migration to skip work). */

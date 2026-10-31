@@ -35,6 +35,11 @@ export class PackagesController {
     return this.packages.update(id, dto);
   }
 
+  @Delete(':id')
+  @Roles('superadmin')
+  async remove(@Param('id', ParseIntPipe) id: number) {
+    return this.packages.remove(id);
+  }
 
   @Post(':id/images/:slot')
   @Roles('superadmin')
