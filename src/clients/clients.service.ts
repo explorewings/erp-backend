@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
-import { and, desc, ilike, or, sql } from 'drizzle-orm';
+import { desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { clients } from '../schema';
 import { CreateClientDto } from './dto/create-client.dto';
@@ -50,6 +50,30 @@ export class ClientsService {
       .returning();
     if (!created) throw new Error('Unable to create client.');
     return created;
+  }
+
+  async update(id: number, dto: CreateClientDto) {
+    const email = dto.email?.trim() || null;
+    const phoneNumber = dto.phoneNumber?.trim() || null;
+    if (!email && !phoneNumber) {
+      throw new BadRequestException('Provide an email address or phone number.');
+    }
+
+    const customFields = this.normalizeCustomFields(dto.customFields);
+    const [updated] = await this.db
+      .update(clients)
+      .set({ name: dto.name.trim(), email, phoneNumber, customFields })
+      .where(eq(clients.id, id))
+      .returning();
+    return updated ?? null;
+  }
+
+  async remove(id: number) {
+    const [deleted] = await this.db
+      .delete(clients)
+      .where(eq(clients.id, id))
+      .returning({ id: clients.id });
+    return deleted ?? null;
   }
 
   private normalizeCustomFields(fields?: Record<string, string>): Record<string, string> {
