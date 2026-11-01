@@ -37,32 +37,18 @@ export class ClientsService {
   }
 
   async create(dto: CreateClientDto) {
-    const email = dto.email?.trim() || null;
-    const phoneNumber = dto.phoneNumber?.trim() || null;
-    if (!email && !phoneNumber) {
-      throw new BadRequestException('Provide an email address or phone number.');
-    }
-
-    const customFields = this.normalizeCustomFields(dto.customFields);
     const [created] = await this.db
       .insert(clients)
-      .values({ name: dto.name.trim(), email, phoneNumber, customFields })
+      .values(this.normalizeClientInput(dto))
       .returning();
     if (!created) throw new Error('Unable to create client.');
     return created;
   }
 
   async update(id: number, dto: CreateClientDto) {
-    const email = dto.email?.trim() || null;
-    const phoneNumber = dto.phoneNumber?.trim() || null;
-    if (!email && !phoneNumber) {
-      throw new BadRequestException('Provide an email address or phone number.');
-    }
-
-    const customFields = this.normalizeCustomFields(dto.customFields);
     const [updated] = await this.db
       .update(clients)
-      .set({ name: dto.name.trim(), email, phoneNumber, customFields })
+      .set(this.normalizeClientInput(dto))
       .where(eq(clients.id, id))
       .returning();
     return updated ?? null;
@@ -74,6 +60,25 @@ export class ClientsService {
       .where(eq(clients.id, id))
       .returning({ id: clients.id });
     return deleted ?? null;
+  }
+
+  normalizeClientInput(dto: CreateClientDto) {
+    const name = dto.name?.trim();
+    const email = dto.email?.trim() || null;
+    const phoneNumber = dto.phoneNumber?.trim() || null;
+    if (!name || name.length > 200) {
+      throw new BadRequestException('Client names must be between 1 and 200 characters.');
+    }
+    if (!email && !phoneNumber) {
+      throw new BadRequestException('Provide an email address or phone number.');
+    }
+
+    return {
+      name,
+      email,
+      phoneNumber,
+      customFields: this.normalizeCustomFields(dto.customFields),
+    };
   }
 
   private normalizeCustomFields(fields?: Record<string, string>): Record<string, string> {

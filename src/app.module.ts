@@ -9,6 +9,7 @@ import { AccessModule } from './access/access.module';
 import { AuthModule } from './auth/auth.module';
 import { ResortsModule } from './resorts/resorts.module';
 import { ClientsModule } from './clients/clients.module';
+import { ClientImportsModule } from './client-imports/client-imports.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { ClientsModule } from './clients/clients.module';
     AuthModule,
     ResortsModule,
     ClientsModule,
+    ClientImportsModule,
   ],
   controllers: [AppController],
 })
