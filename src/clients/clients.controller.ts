@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { CreateClientDto } from './dto/create-client.dto';
@@ -14,8 +14,18 @@ export class ClientsController {
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('importId') importId?: string,
   ) {
-    return this.clients.list({ search, page: Number(page), pageSize: Number(limit) });
+    const parsedImportId = importId === undefined ? undefined : Number(importId);
+    if (parsedImportId !== undefined && (!Number.isInteger(parsedImportId) || parsedImportId < 1)) {
+      throw new BadRequestException('Import ID must be a positive integer.');
+    }
+    return this.clients.list({
+      search,
+      page: Number(page),
+      pageSize: Number(limit),
+      importId: parsedImportId,
+    });
   }
 
   @Delete('imports/:importId/bulk')

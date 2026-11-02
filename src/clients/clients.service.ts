@@ -1,5 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { clientImports, clients } from '../schema';
 import { CreateClientDto } from './dto/create-client.dto';
@@ -8,17 +8,22 @@ import { CreateClientDto } from './dto/create-client.dto';
 export class ClientsService {
   constructor(@Inject(DRIZZLE) private readonly db: DrizzleDb) {}
 
-  async list(params: { search?: string; page?: number; pageSize?: number }) {
+  async list(params: { search?: string; page?: number; pageSize?: number; importId?: number }) {
     const page = Math.max(1, Number(params.page) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 100));
     const term = params.search?.trim();
-    const where = term
+    const searchFilter = term
       ? or(
           ilike(clients.name, `%${term}%`),
           ilike(clients.email, `%${term}%`),
           ilike(clients.phoneNumber, `%${term}%`),
         )
       : undefined;
+    const where = params.importId
+      ? searchFilter
+        ? and(eq(clients.importId, params.importId), searchFilter)
+        : eq(clients.importId, params.importId)
+      : searchFilter;
 
     const countRows = await this.db
       .select({ count: sql<number>`count(*)::int` })
