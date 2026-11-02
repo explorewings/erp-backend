@@ -1,7 +1,7 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
-import { desc, eq, ilike, or, sql } from 'drizzle-orm';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
-import { clients } from '../schema';
+import { clientImports, clients } from '../schema';
 import { CreateClientDto } from './dto/create-client.dto';
 
 @Injectable()
@@ -60,6 +60,43 @@ export class ClientsService {
       .where(eq(clients.id, id))
       .returning({ id: clients.id });
     return deleted ?? null;
+  }
+
+  async removeImportBatch(importId: number) {
+    return this.db.transaction(async (tx) => {
+      const [clientImport] = await tx
+        .select({ id: clientImports.id, status: clientImports.status })
+        .from(clientImports)
+        .where(eq(clientImports.id, importId))
+        .for('update');
+      if (!clientImport) throw new NotFoundException('Client import not found.');
+      if (clientImport.status === 'processing') {
+        throw new BadRequestException('Wait for the client import to finish before deleting it.');
+      }
+
+      const batch = await tx
+        .select({ id: clients.id })
+        .from(clients)
+        .where(eq(clients.importId, importId))
+        .orderBy(clients.id)
+        .limit(100);
+
+      const deleted = batch.length
+        ? await tx
+            .delete(clients)
+            .where(inArray(clients.id, batch.map(({ id }) => id)))
+            .returning({ id: clients.id })
+        : [];
+      const [remaining] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(clients)
+        .where(eq(clients.importId, importId));
+
+      return {
+        deletedCount: deleted.length,
+        remainingCount: remaining?.count ?? 0,
+      };
+    });
   }
 
   normalizeClientInput(dto: CreateClientDto) {

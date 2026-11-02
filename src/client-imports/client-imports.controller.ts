@@ -1,6 +1,8 @@
 import {
   Body,
   Controller,
+  Delete,
+  Get,
   Param,
   ParseIntPipe,
   Post,
@@ -22,6 +24,17 @@ interface AuthenticatedRequest extends Request {
 @UseGuards(JwtGuard, RolesGuard)
 export class ClientImportsController {
   constructor(private readonly imports: ClientImportsService) {}
+
+  @Get()
+  list() {
+    return this.imports.list();
+  }
+
+  @Delete(':id')
+  @Roles('superadmin', 'superuser')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.imports.remove(id);
+  }
 
   @Post()
   @Roles('superadmin', 'superuser')

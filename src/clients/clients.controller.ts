@@ -18,6 +18,12 @@ export class ClientsController {
     return this.clients.list({ search, page: Number(page), pageSize: Number(limit) });
   }
 
+  @Delete('imports/:importId/bulk')
+  @Roles('superadmin', 'superuser')
+  removeImportBatch(@Param('importId', ParseIntPipe) importId: number) {
+    return this.clients.removeImportBatch(importId);
+  }
+
   @Post()
   @Roles('superadmin', 'superuser')
   create(@Body() dto: CreateClientDto) {

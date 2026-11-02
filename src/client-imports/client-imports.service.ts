@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { clientImports, clients } from '../schema';
 import { ClientsService } from '../clients/clients.service';
@@ -29,6 +29,50 @@ export class ClientImportsService {
       .returning();
     if (!created) throw new Error('Unable to create client import.');
     return created;
+  }
+
+  async list() {
+    return this.db
+      .select({
+        id: clientImports.id,
+        name: clientImports.name,
+        status: clientImports.status,
+        totalRows: clientImports.totalRows,
+        importedRows: clientImports.importedRows,
+        createdAt: clientImports.createdAt,
+        completedAt: clientImports.completedAt,
+      })
+      .from(clientImports)
+      .orderBy(desc(clientImports.createdAt), desc(clientImports.id));
+  }
+
+  async remove(id: number) {
+    return this.db.transaction(async (tx) => {
+      const [clientImport] = await tx
+        .select()
+        .from(clientImports)
+        .where(eq(clientImports.id, id))
+        .for('update');
+      if (!clientImport) throw new NotFoundException('Client import not found.');
+      if (clientImport.status === 'processing') {
+        throw new BadRequestException('Wait for the client import to finish before deleting it.');
+      }
+
+      const [remaining] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(clients)
+        .where(eq(clients.importId, id));
+      if ((remaining?.count ?? 0) > 0) {
+        throw new BadRequestException('Delete all imported clients before removing this import.');
+      }
+
+      const [deleted] = await tx
+        .delete(clientImports)
+        .where(eq(clientImports.id, id))
+        .returning({ id: clientImports.id });
+      if (!deleted) throw new Error('Unable to delete client import.');
+      return deleted;
+    });
   }
 
   async appendBatch(id: number, userId: string, dto: AppendClientImportBatchDto) {
