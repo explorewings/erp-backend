@@ -28,6 +28,21 @@ export class ClientsController {
     });
   }
 
+  @Delete('bulk')
+  @Roles('superadmin', 'superuser')
+  removeMany(@Body() body: { ids?: unknown }) {
+    const ids = body?.ids;
+    if (
+      !Array.isArray(ids) ||
+      ids.length < 1 ||
+      ids.length > 100 ||
+      ids.some((id) => !Number.isInteger(id) || Number(id) < 1)
+    ) {
+      throw new BadRequestException('Provide between 1 and 100 valid client IDs.');
+    }
+    return this.clients.removeMany(ids as number[]);
+  }
+
   @Delete('imports/:importId/bulk')
   @Roles('superadmin', 'superuser')
   removeImportBatch(@Param('importId', ParseIntPipe) importId: number) {

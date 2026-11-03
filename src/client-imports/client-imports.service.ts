@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, exists, ne, or, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { clientImports, clients } from '../schema';
 import { ClientsService } from '../clients/clients.service';
@@ -39,10 +39,24 @@ export class ClientImportsService {
         status: clientImports.status,
         totalRows: clientImports.totalRows,
         importedRows: clientImports.importedRows,
+        clientCount: sql<number>`(
+          SELECT count(*)::int
+          FROM ${clients}
+          WHERE ${clients.importId} = ${clientImports.id}
+        )`,
         createdAt: clientImports.createdAt,
         completedAt: clientImports.completedAt,
       })
       .from(clientImports)
+      .where(or(
+        ne(clientImports.status, 'completed'),
+        exists(
+          this.db
+            .select({ id: clients.id })
+            .from(clients)
+            .where(eq(clients.importId, clientImports.id)),
+        ),
+      ))
       .orderBy(desc(clientImports.createdAt), desc(clientImports.id));
   }
 

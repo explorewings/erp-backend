@@ -67,6 +67,19 @@ export class ClientsService {
     return deleted ?? null;
   }
 
+  async removeMany(ids: number[]) {
+    if (!ids.length || ids.length > 100) {
+      throw new BadRequestException('Delete between 1 and 100 clients per batch.');
+    }
+
+    const uniqueIds = [...new Set(ids)];
+    const deleted = await this.db
+      .delete(clients)
+      .where(inArray(clients.id, uniqueIds))
+      .returning({ id: clients.id });
+    return { deletedCount: deleted.length };
+  }
+
   async removeImportBatch(importId: number) {
     return this.db.transaction(async (tx) => {
       const [clientImport] = await tx
