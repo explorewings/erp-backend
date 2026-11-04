@@ -1,5 +1,6 @@
 export * from './access';
 export * from './access-items';
+export * from './calendar';
 export * from './clients';
 export * from './client-imports';
 export * from './crm';
