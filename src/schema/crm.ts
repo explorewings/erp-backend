@@ -8,9 +8,11 @@ import {
   serial,
   text,
   timestamp,
+  uuid,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { clients } from './clients';
+import { users } from './users';
 
 export const crmPipelines = pgTable(
   'crm_pipelines',
@@ -20,6 +22,7 @@ export const crmPipelines = pgTable(
     position: integer('position').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
   },
   (table) => [
     check('crm_pipelines_name_not_empty', sql`BTRIM(${table.name}) <> ''`),
@@ -75,9 +78,28 @@ export const crmDeals = pgTable(
   ],
 );
 
+export const crmPipelineUsers = pgTable(
+  'crm_pipeline_users',
+  {
+    pipelineId: integer('pipeline_id')
+      .notNull()
+      .references(() => crmPipelines.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('crm_pipeline_users_pipeline_user_uidx').on(table.pipelineId, table.userId),
+    index('crm_pipeline_users_user_id_idx').on(table.userId),
+  ],
+);
+
+
 export type CrmPipelineRow = typeof crmPipelines.$inferSelect;
 export type NewCrmPipelineRow = typeof crmPipelines.$inferInsert;
 export type CrmPipelineStageRow = typeof crmPipelineStages.$inferSelect;
+export type CrmPipelineUserRow = typeof crmPipelineUsers.$inferSelect;
 export type NewCrmPipelineStageRow = typeof crmPipelineStages.$inferInsert;
 export type CrmDealRow = typeof crmDeals.$inferSelect;
 export type NewCrmDealRow = typeof crmDeals.$inferInsert;
