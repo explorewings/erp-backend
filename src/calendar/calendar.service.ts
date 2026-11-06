@@ -34,6 +34,7 @@ export class CalendarService {
     type?: string;
     assigneeId?: string;
     search?: string;
+    viewer?: AuthUser;
   }) {
     if (query.assigneeId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(query.assigneeId)) {
       throw new BadRequestException('assigneeId must be a valid UUID.');
@@ -48,7 +49,16 @@ export class CalendarService {
       throw new BadRequestException('from must be on or before to.');
     }
 
+    const viewerId = query.viewer?.id;
+    const viewerRole = (query.viewer as { role?: string })?.role;
+    const isPrivileged = viewerRole === 'superadmin';
+
     const conditions: ReturnType<typeof sql>[] = [];
+    if (!isPrivileged && viewerId) {
+      conditions.push(
+        sql`(${calendarEvents.type} = 'announcement' OR ${calendarEvents.createdBy} = ${viewerId} OR EXISTS (SELECT 1 FROM ${calendarAssignees} WHERE ${calendarAssignees.eventId} = ${calendarEvents.id} AND ${calendarAssignees.userId} = ${viewerId}))`,
+      );
+    }
     if (from) conditions.push(sql`${calendarEvents.endsAt} >= ${from}`);
     if (to) conditions.push(sql`${calendarEvents.startsAt} <= ${to}`);
     if (query.type) {
@@ -87,8 +97,7 @@ export class CalendarService {
     return event;
   }
 
-  async create(dto: CreateCalendarEventDto, actor: AuthUser) {
-    const startsAt = parseDate(dto.startsAt, 'startsAt');
+  async create(dto: CreateCalendarEventDto, actor: AuthUser) {    const startsAt = parseDate(dto.startsAt, 'startsAt');
     if (!startsAt) throw new BadRequestException('startsAt is required.');
     const endsAt = parseDate(dto.endsAt, 'endsAt');
     if (endsAt && endsAt < startsAt) {
@@ -118,7 +127,7 @@ export class CalendarService {
     return this.findOne(created.id);
   }
 
-  async update(id: number, dto: UpdateCalendarEventDto) {
+  async update(id: number, dto: UpdateCalendarEventDto, actor: AuthUser) {
     const existing = await this.db
       .select()
       .from(calendarEvents)
@@ -126,6 +135,42 @@ export class CalendarService {
       .limit(1)
       .then((rows) => rows[0]);
     if (!existing) throw new NotFoundException(`Calendar event ${id} not found.`);
+
+    const actorId = actor?.id;
+    const actorRole = (actor as { role?: string })?.role;
+    if (actorRole !== 'superadmin') {
+      const isCreator = actorId && existing.createdBy === actorId;
+      if (!isCreator) {
+        // Check if actor is assignee
+        const isAssignee = actorId
+          ? await this.db
+              .select({ eventId: calendarAssignees.eventId })
+              .from(calendarAssignees)
+              .where(
+                and(
+                  eq(calendarAssignees.eventId, id),
+                  eq(calendarAssignees.userId, actorId),
+                ),
+              )
+              .then((rows) => rows.length > 0)
+          : false;
+        if (!isAssignee) {
+          throw new BadRequestException(
+            'Only the creator or assigned staff can update this calendar event.',
+          );
+        }
+        // Assignee: strip non-status fields
+        const { title, description, type, startsAt, endsAt, location, assigneeIds, ..._rest } = dto as any;
+        // Keep only status/reason fields if present in future DTO; currently DTO has none,
+        // so assignee update becomes no-op unless we add those fields.
+        // For now, reject field changes other than updatedAt.
+        if (title !== undefined || description !== undefined || type !== undefined || startsAt !== undefined || endsAt !== undefined || location !== undefined || assigneeIds !== undefined) {
+          throw new BadRequestException(
+            'Assigned staff can only update status and reason fields.',
+          );
+        }
+      }
+    }
 
     const nextStartsAt =
       dto.startsAt !== undefined ? parseDate(dto.startsAt, 'startsAt') : existing.startsAt;
@@ -160,7 +205,24 @@ export class CalendarService {
     return this.findOne(id);
   }
 
-  async remove(id: number) {
+  async remove(id: number, actor: AuthUser) {
+    const existing = await this.db
+      .select()
+      .from(calendarEvents)
+      .where(eq(calendarEvents.id, id))
+      .limit(1)
+      .then((rows) => rows[0]);
+    if (!existing) throw new NotFoundException(`Calendar event ${id} not found.`);
+
+    const actorId = actor?.id;
+    const actorRole = (actor as { role?: string })?.role;
+    if (actorRole !== 'superadmin') {
+      const isCreator = actorId && existing.createdBy === actorId;
+      if (!isCreator) {
+        throw new BadRequestException('Only the creator or superadmin can delete this calendar event.');
+      }
+    }
+
     const [deleted] = await this.db
       .delete(calendarEvents)
       .where(eq(calendarEvents.id, id))

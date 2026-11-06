@@ -31,8 +31,9 @@ export class CalendarController {
     @Query('type') type?: string,
     @Query('assigneeId') assigneeId?: string,
     @Query('search') search?: string,
+    @Request() req?: any,
   ) {
-    return this.calendar.list({ from, to, type, assigneeId, search });
+    return this.calendar.list({ from, to, type, assigneeId, search, viewer: req?.user ?? {} });
   }
 
   @Get(':id')
@@ -43,23 +44,21 @@ export class CalendarController {
   }
 
   @Post()
-  @Roles('superadmin', 'superuser', 'admin')
   create(@Body() dto: CreateCalendarEventDto, @Request() req: any) {
     return this.calendar.create(dto, req.user ?? {});
   }
 
   @Patch(':id')
-  @Roles('superadmin', 'superuser', 'admin')
   update(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateCalendarEventDto,
+    @Request() req: any,
   ) {
-    return this.calendar.update(id, dto);
+    return this.calendar.update(id, dto, req.user ?? {});
   }
 
   @Delete(':id')
-  @Roles('superadmin', 'superuser', 'admin')
-  async remove(@Param('id', ParseIntPipe) id: number) {
-    return this.calendar.remove(id);
+  async remove(@Param('id', ParseIntPipe) id: number, @Request() req: any) {
+    return this.calendar.remove(id, req.user ?? {});
   }
 }
