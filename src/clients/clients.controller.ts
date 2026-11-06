@@ -49,8 +49,8 @@ export class ClientsController {
     return this.clients.removeImportBatch(importId);
   }
 
+  /** Any signed-in user may add clients; editing and deleting stay restricted. */
   @Post()
-  @Roles('superadmin', 'superuser')
   create(@Body() dto: CreateClientDto) {
     return this.clients.create(dto);
   }

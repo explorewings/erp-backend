@@ -5,11 +5,6 @@ export class CreateCrmPipelineDto {
   @MaxLength(100)
   name!: string;
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(50)
-  template?: string;
-
   @IsArray()
   @ArrayMinSize(1)
   @IsString({ each: true })

@@ -17,7 +17,10 @@ import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
 import { RenameCrmPipelineDto } from './dto/rename-pipeline.dto';
 import { RenameCrmStageDto } from './dto/rename-stage.dto';
 import { ReorderCrmStagesDto } from './dto/reorder-stages.dto';
+import { CrmUser } from './crm-access';
 import { CrmService } from './crm.service';
+
+type AuthedRequest = { user: CrmUser };
 
 @Controller('crm/pipelines')
 @UseGuards(JwtGuard, RolesGuard)
@@ -25,26 +28,19 @@ export class CrmController {
   constructor(private readonly crm: CrmService) {}
 
   @Get()
-  list(@Req() req: any) {
+  list(@Req() req: AuthedRequest) {
     return this.crm.listPipelines(req.user);
   }
 
   @Post()
-  create(@Req() req: any, @Body() dto: CreateCrmPipelineDto) {
-    return this.crm.createPipeline(
-      {
-        name: dto.name,
-        stages: dto.stages,
-        allowedUserIds: dto.allowedUserIds,
-      },
-      req.user,
-    );
+  create(@Req() req: AuthedRequest, @Body() dto: CreateCrmPipelineDto) {
+    return this.crm.createPipeline(dto, req.user);
   }
 
   /** Rename a pipeline. Superadmin/superuser, the creator, or an admin with access. */
   @Patch(':pipelineId')
   renamePipeline(
-    @Req() req: any,
+    @Req() req: AuthedRequest,
     @Param('pipelineId', ParseIntPipe) pipelineId: number,
     @Body() dto: RenameCrmPipelineDto,
   ) {
@@ -53,20 +49,20 @@ export class CrmController {
 
   /** Deal and stage counts for the delete confirmation. */
   @Get(':pipelineId/delete-impact')
-  deleteImpact(@Req() req: any, @Param('pipelineId', ParseIntPipe) pipelineId: number) {
+  deleteImpact(@Req() req: AuthedRequest, @Param('pipelineId', ParseIntPipe) pipelineId: number) {
     return this.crm.getPipelineDeleteImpact(pipelineId, req.user);
   }
 
   /** Delete a pipeline with its deals, stages, and access list. Clients are kept. */
   @Delete(':pipelineId')
-  deletePipeline(@Req() req: any, @Param('pipelineId', ParseIntPipe) pipelineId: number) {
+  deletePipeline(@Req() req: AuthedRequest, @Param('pipelineId', ParseIntPipe) pipelineId: number) {
     return this.crm.deletePipeline(pipelineId, req.user);
   }
 
   /** Replace the stage order. Body: every stage ID of the pipeline, in order. */
   @Put(':pipelineId/stages/order')
   reorderStages(
-    @Req() req: any,
+    @Req() req: AuthedRequest,
     @Param('pipelineId', ParseIntPipe) pipelineId: number,
     @Body() dto: ReorderCrmStagesDto,
   ) {
@@ -76,7 +72,7 @@ export class CrmController {
   /** Rename one stage of the pipeline. */
   @Patch(':pipelineId/stages/:stageId')
   renameStage(
-    @Req() req: any,
+    @Req() req: AuthedRequest,
     @Param('pipelineId', ParseIntPipe) pipelineId: number,
     @Param('stageId', ParseIntPipe) stageId: number,
     @Body() dto: RenameCrmStageDto,
