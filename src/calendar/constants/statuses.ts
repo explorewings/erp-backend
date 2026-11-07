@@ -1,4 +1,4 @@
-/* Stored statuses per event type (docs/calendar-plan.md §1–§4). */
+/* Stored statuses per event type (docs/calendar-module.md §1–§4). */
 
 export const TASK_STATUSES = [
   'assigned',
