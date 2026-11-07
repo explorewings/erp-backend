@@ -1,64 +1,49 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  NotFoundException,
-  Param,
-  ParseIntPipe,
-  Patch,
-  Post,
-  Query,
-  Request,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/guards/roles.guard';
 import { CalendarService } from './calendar.service';
+import type { Viewer } from './calendar.policy';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
+import { ListCalendarQueryDto, UpdatesQueryDto } from './dto/list-calendar-query.dto';
 import { UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
 
+/** /rest/v1/calendar (plan §6). Every rule is enforced in CalendarService via CalendarPolicy. */
 @Controller('calendar')
 @UseGuards(JwtGuard, RolesGuard)
 export class CalendarController {
   constructor(private readonly calendar: CalendarService) {}
 
+  private viewer(req: { user?: { id?: string; role?: string } }): Viewer {
+    return { id: req.user?.id ?? '', role: req.user?.role ?? 'staff' };
+  }
+
   @Get()
-  list(
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('type') type?: string,
-    @Query('assigneeId') assigneeId?: string,
-    @Query('search') search?: string,
-    @Request() req?: any,
-  ) {
-    return this.calendar.list({ from, to, type, assigneeId, search, viewer: req?.user ?? {} });
+  list(@Query() query: ListCalendarQueryDto, @Request() req: any) {
+    return this.calendar.list(this.viewer(req), query);
+  }
+
+  @Get('updates')
+  updates(@Query() query: UpdatesQueryDto, @Request() req: any) {
+    return this.calendar.feed(this.viewer(req), query.page ?? 1);
   }
 
   @Get(':id')
-  async findOne(@Param('id', ParseIntPipe) id: number) {
-    const event = await this.calendar.findOne(id);
-    if (!event) throw new NotFoundException(`Calendar event ${id} not found.`);
-    return event;
+  findOne(@Param('id', ParseIntPipe) id: number, @Request() req: any) {
+    return this.calendar.findOne(this.viewer(req), id);
   }
 
   @Post()
   create(@Body() dto: CreateCalendarEventDto, @Request() req: any) {
-    return this.calendar.create(dto, req.user ?? {});
+    return this.calendar.create(this.viewer(req), dto);
   }
 
   @Patch(':id')
-  update(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdateCalendarEventDto,
-    @Request() req: any,
-  ) {
-    return this.calendar.update(id, dto, req.user ?? {});
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateCalendarEventDto, @Request() req: any) {
+    return this.calendar.update(this.viewer(req), id, dto);
   }
 
   @Delete(':id')
-  async remove(@Param('id', ParseIntPipe) id: number, @Request() req: any) {
-    return this.calendar.remove(id, req.user ?? {});
+  remove(@Param('id', ParseIntPipe) id: number, @Request() req: any) {
+    return this.calendar.remove(this.viewer(req), id);
   }
 }

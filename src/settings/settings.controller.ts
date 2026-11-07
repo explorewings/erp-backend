@@ -194,7 +194,16 @@ export class SettingsController {
     if (existing.role === 'superadmin' || existing.role === 'superuser') {
       throw new BadRequestException('The superadmin account cannot be deleted.');
     }
-    await this.db.delete(users).where(eq(users.id, id));
+    try {
+      await this.db.delete(users).where(eq(users.id, id));
+    } catch (error) {
+      // Calendar items (and other records) reference the user with ON DELETE RESTRICT.
+      const code = (error as { code?: string; cause?: { code?: string } }).code ?? (error as { cause?: { code?: string } }).cause?.code;
+      if (code === '23503') {
+        throw new BadRequestException('This user still owns or is assigned calendar items. Deactivate them instead.');
+      }
+      throw error;
+    }
     return { deleted: id };
   }
 

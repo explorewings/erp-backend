@@ -4,10 +4,13 @@ import { JwtModule } from '@nestjs/jwt';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CalendarController } from './calendar.controller';
 import { CalendarService } from './calendar.service';
+import { CalendarPolicy } from './calendar.policy';
+import { CalendarLogService } from './calendar-log.service';
+import { CalendarSweeper } from './calendar.sweeper';
 
 @Module({
   controllers: [CalendarController],
-  providers: [RolesGuard, CalendarService],
+  providers: [RolesGuard, CalendarPolicy, CalendarLogService, CalendarService, CalendarSweeper],
   imports: [
     JwtModule.registerAsync({
       inject: [ConfigService],
