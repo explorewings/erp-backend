@@ -8,3 +8,4 @@ export * from './images';
 export * from './packages';
 export * from './resorts';
 export * from './users';
+export * from './notifications';

@@ -13,6 +13,8 @@ import { TASK_TRANSITIONS, fieldsFor, type Actor, type FieldRule } from './const
 export interface Viewer {
   id: string;
   role: string;
+  /** For human-readable notifications only; never used for permission checks. */
+  username?: string;
 }
 
 export interface PermissionAction {

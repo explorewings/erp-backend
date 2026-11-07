@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
 import { calendarEventTypes } from '../../schema/calendar';
 
 export class ListCalendarQueryDto {
@@ -22,6 +22,20 @@ export class ListCalendarQueryDto {
   @IsString()
   @MaxLength(200)
   search?: string;
+
+  /** Optional paging (the day panel). Without it the month view gets everything up to the row cap. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
 }
 
 export class UpdatesQueryDto {

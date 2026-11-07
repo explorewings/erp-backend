@@ -13,8 +13,8 @@ import { UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
 export class CalendarController {
   constructor(private readonly calendar: CalendarService) {}
 
-  private viewer(req: { user?: { id?: string; role?: string } }): Viewer {
-    return { id: req.user?.id ?? '', role: req.user?.role ?? 'staff' };
+  private viewer(req: { user?: { id?: string; role?: string; username?: string } }): Viewer {
+    return { id: req.user?.id ?? '', role: req.user?.role ?? 'staff', username: req.user?.username };
   }
 
   @Get()

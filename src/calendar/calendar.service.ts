@@ -9,6 +9,7 @@ import {
   type NewCalendarEventRow,
 } from '../schema';
 import { CalendarLogService } from './calendar-log.service';
+import { CalendarNotifier } from './calendar.notifier';
 import { CalendarPolicy, type Viewer } from './calendar.policy';
 import { CAN_CREATE, canAssignTask } from './constants/roles';
 import { ruleFor } from './constants/task-transitions';
@@ -61,6 +62,7 @@ export class CalendarService {
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly policy: CalendarPolicy,
     private readonly log: CalendarLogService,
+    private readonly notifier: CalendarNotifier,
   ) {}
 
   // ---------------------------------------------------------------- reads
@@ -73,10 +75,11 @@ export class CalendarService {
 
     const e = calendarEvents;
     // Tasks appear on their deadline day only (A2); other types on every day they overlap.
+    // An event that ends exactly at `from` (e.g. midnight) does not spill into the range (plan §7).
     const conditions = [
       this.policy.visibleTo(viewer),
       sql`((${e.type} = 'task' AND ${e.endsAt} BETWEEN ${from} AND ${to})
-        OR (${e.type} <> 'task' AND ${e.startsAt} <= ${to} AND ${e.endsAt} >= ${from}))`,
+        OR (${e.type} <> 'task' AND ${e.startsAt} <= ${to} AND (${e.endsAt} > ${from} OR ${e.startsAt} >= ${from})))`,
     ];
     if (query.type) conditions.push(sql`${e.type} = ${query.type}`);
     if (query.assigneeId) conditions.push(sql`${e.assigneeId} = ${query.assigneeId}`);
@@ -85,13 +88,24 @@ export class CalendarService {
       conditions.push(sql`(${e.title} ILIKE ${term} OR ${e.description} ILIKE ${term} OR ${e.location} ILIKE ${term})`);
     }
 
-    const rows = await this.db
-      .select()
-      .from(e)
-      .where(and(...conditions))
-      .orderBy(asc(e.startsAt), asc(e.id))
-      .limit(ROW_CAP + 1);
+    // A task's place in the day is its deadline; everything else sorts by start.
+    const when = sql`CASE WHEN ${e.type} = 'task' THEN ${e.endsAt} ELSE ${e.startsAt} END`;
+    const base = this.db.select().from(e).where(and(...conditions)).orderBy(asc(when), asc(e.id));
 
+    if (query.page || query.pageSize) {
+      const page = query.page ?? 1;
+      const pageSize = query.pageSize ?? 20;
+      const rows = await base.limit(pageSize + 1).offset((page - 1) * pageSize);
+      return {
+        events: await this.present(rows.slice(0, pageSize), viewer),
+        truncated: false,
+        page,
+        pageSize,
+        hasMore: rows.length > pageSize,
+      };
+    }
+
+    const rows = await base.limit(ROW_CAP + 1);
     return {
       events: await this.present(rows.slice(0, ROW_CAP), viewer),
       truncated: rows.length > ROW_CAP,
@@ -172,6 +186,7 @@ export class CalendarService {
         { eventId: created.id, actorId: viewer.id, action: 'created', toStatus: values.status },
         tx,
       );
+      await this.notifier.created(tx, viewer, { ...values, id: created.id }, memberIds);
       return created.id;
     });
     return this.findOne(viewer, id);
@@ -289,6 +304,7 @@ export class CalendarService {
     }
 
     if (row.type === 'task') this.cleanWorkflowFields(next);
+    const members = row.type === 'meeting' ? await this.memberIdsOf(row.id) : [];
     const updated = await this.save(viewer, row, next, {
       action: logAction,
       fromStatus: from,
@@ -299,7 +315,7 @@ export class CalendarService {
         ...(next.endsAt ? { deadline: next.endsAt } : {}),
         ...(action === 'request_extension' ? { requestedDeadline: next.extensionUntil } : {}),
       },
-    });
+    }, null, (tx) => this.notifier.step(tx, viewer, row, action, reason, members));
     return updated;
   }
 
@@ -385,12 +401,15 @@ export class CalendarService {
     for (const key of keys) changed.push(key);
 
     const memberIds = dto.memberIds !== undefined ? await this.validMembers(dto.memberIds, row.createdBy) : null;
+    const before = memberIds ? new Set(await this.memberIdsOf(row.id)) : new Set<string>();
+    const added = (memberIds ?? []).filter((id) => !before.has(id));
     return this.save(
       viewer,
       row,
       next,
       { action: logAction, fromStatus: toStatus ? row.status : null, toStatus, meta: { changed } },
       memberIds,
+      (tx) => this.notifier.edited(tx, viewer, row, next, added),
     );
   }
 
@@ -437,6 +456,7 @@ export class CalendarService {
     next: Partial<CalendarEventRow>,
     entry: { action: string; fromStatus?: string | null; toStatus?: string | null; reason?: string | null; meta?: Record<string, unknown> },
     memberIds: string[] | null = null,
+    afterWrite?: (tx: Tx) => Promise<unknown>,
   ) {
     const saved = await this.db.transaction(async (tx: Tx) => {
       const result = await tx
@@ -452,6 +472,8 @@ export class CalendarService {
         }
       }
       await this.log.write({ eventId: row.id, actorId: viewer.id, ...entry }, tx);
+      // Notifications ride the same transaction: no alert for a change that rolled back.
+      if (afterWrite) await afterWrite(tx);
       return true;
     });
     if (!saved) {
@@ -459,6 +481,14 @@ export class CalendarService {
       await this.conflict(viewer, latest ?? row);
     }
     return this.findOne(viewer, row.id);
+  }
+
+  private async memberIdsOf(eventId: number): Promise<string[]> {
+    const rows = await this.db
+      .select({ userId: calendarMeetingMembers.userId })
+      .from(calendarMeetingMembers)
+      .where(eq(calendarMeetingMembers.eventId, eventId));
+    return rows.map((r) => r.userId);
   }
 
   private async assertAssignable(viewer: Viewer, assigneeId: string) {

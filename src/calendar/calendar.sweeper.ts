@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { calendarEvents } from '../schema';
 import { CalendarLogService } from './calendar-log.service';
+import { CalendarNotifier } from './calendar.notifier';
 import { FAILABLE_TASK_STATUSES } from './constants/statuses';
 
 const INTERVAL_MS = 5 * 60_000;
@@ -26,6 +27,7 @@ export class CalendarSweeper implements OnModuleInit, OnModuleDestroy {
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly pool: Pool,
     private readonly log: CalendarLogService,
+    private readonly notifier: CalendarNotifier,
   ) {}
 
   onModuleInit() {
@@ -99,12 +101,13 @@ export class CalendarSweeper implements OnModuleInit, OnModuleDestroy {
             isNull(e.deletedAt),
           ),
         )
-        .returning({ id: e.id });
+        .returning({ id: e.id, title: e.title, createdBy: e.createdBy, assigneeId: e.assigneeId });
       for (const row of failed) {
         await this.log.write(
           { eventId: row.id, actorId: null, action: 'failed_auto', toStatus: 'failed', meta: { system: true } },
           tx,
         );
+        await this.notifier.failed(tx, row);
       }
       return failed.length;
     });
