@@ -38,11 +38,13 @@ function toPipelineResponse(
   stages: CrmPipelineStageRow[],
   allowedUserIds: string[],
   canManage: boolean,
+  dealCount = 0,
 ) {
   return {
     id: pipeline.id,
     name: pipeline.name,
     position: pipeline.position,
+    dealCount,
     createdAt: pipeline.createdAt,
     updatedAt: pipeline.updatedAt,
     createdBy: pipeline.createdBy,
@@ -139,7 +141,7 @@ export class CrmService {
     if (visible.length === 0) return [];
 
     const visibleIds = visible.map((pipeline) => pipeline.id);
-    const [stageRows, accessRows] = await Promise.all([
+    const [stageRows, accessRows, dealCountRows] = await Promise.all([
       this.db
         .select()
         .from(crmPipelineStages)
@@ -148,10 +150,21 @@ export class CrmService {
         .select({ pipelineId: crmPipelineUsers.pipelineId, userId: crmPipelineUsers.userId })
         .from(crmPipelineUsers)
         .where(inArray(crmPipelineUsers.pipelineId, visibleIds)),
+      this.db
+        .select({
+          pipelineId: crmDeals.pipelineId,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(crmDeals)
+        .where(inArray(crmDeals.pipelineId, visibleIds))
+        .groupBy(crmDeals.pipelineId),
     ]);
 
     const stagesByPipeline = groupBy(stageRows, (stage) => stage.pipelineId);
     const accessByPipeline = groupBy(accessRows, (access) => access.pipelineId);
+    const dealCountsByPipeline = new Map(
+      dealCountRows.map(({ pipelineId, count }) => [pipelineId, count]),
+    )
 
     return visible.map((pipeline) =>
       toPipelineResponse(
@@ -159,6 +172,7 @@ export class CrmService {
         stagesByPipeline.get(pipeline.id) ?? [],
         (accessByPipeline.get(pipeline.id) ?? []).map((access) => access.userId),
         canManagePipeline(user, pipeline, grantedIds.has(pipeline.id)),
+        dealCountsByPipeline.get(pipeline.id) ?? 0,
       ),
     );
   }

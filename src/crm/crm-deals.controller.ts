@@ -3,6 +3,7 @@ import { JwtGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CrmUser } from './crm-access';
 import { CrmDealsService } from './crm-deals.service';
+import { AddExistingCrmDealsDto } from './dto/add-existing-deals.dto';
 import { CreateCrmDealDto } from './dto/create-deal.dto';
 import { MoveCrmDealDto } from './dto/move-deal.dto';
 
@@ -28,6 +29,16 @@ export class CrmDealsController {
     @Body() dto: CreateCrmDealDto,
   ) {
     return this.deals.createDealWithClient(pipelineId, dto, req.user);
+  }
+
+  /** Add existing clients to a pipeline, skipping clients already in it. */
+  @Post('pipelines/:pipelineId/deals/existing/bulk')
+  addExisting(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Body() dto: AddExistingCrmDealsDto,
+  ) {
+    return this.deals.addExistingClients(pipelineId, dto.clientIds, req.user);
   }
 
   /** Move a deal to another stage of its pipeline. */

@@ -79,4 +79,42 @@ export class CalendarLogService {
       })),
     };
   }
+
+  /** Full trail of one event, newest first. The caller must have already checked visibility. */
+  async forEvent(eventId: number, page = 1) {
+    const actor = alias(users, 'actor');
+    const size = CalendarLogService.PAGE_SIZE;
+    const rows = await this.db
+      .select({
+        id: calendarEventLog.id,
+        action: calendarEventLog.action,
+        fromStatus: calendarEventLog.fromStatus,
+        toStatus: calendarEventLog.toStatus,
+        reason: calendarEventLog.reason,
+        meta: calendarEventLog.meta,
+        createdAt: calendarEventLog.createdAt,
+        actorId: actor.id,
+        actorName: actor.username,
+      })
+      .from(calendarEventLog)
+      .leftJoin(actor, eq(calendarEventLog.actorId, actor.id))
+      .where(eq(calendarEventLog.eventId, eventId))
+      .orderBy(desc(calendarEventLog.createdAt), desc(calendarEventLog.id))
+      .limit(size + 1)
+      .offset((page - 1) * size);
+    return {
+      page,
+      hasMore: rows.length > size,
+      items: rows.slice(0, size).map((row) => ({
+        id: row.id,
+        action: row.action,
+        fromStatus: row.fromStatus,
+        toStatus: row.toStatus,
+        reason: row.reason,
+        meta: row.meta,
+        createdAt: row.createdAt,
+        actor: row.actorId ? { id: row.actorId, username: row.actorName } : null,
+      })),
+    };
+  }
 }

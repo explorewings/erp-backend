@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { ClientsService } from '../clients/clients.service';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { ClientRow, CrmDealRow, clients, crmDeals, crmPipelineStages } from '../schema';
@@ -93,6 +93,53 @@ export class CrmDealsService {
       }
       throw error;
     }
+  }
+
+  /** Adds existing clients to the first stage, skipping duplicates in this pipeline. */
+  async addExistingClients(pipelineId: number, clientIds: number[], user: CrmUser) {
+    await this.pipelines.getVisiblePipeline(pipelineId, user);
+    const uniqueClientIds = [...new Set(clientIds)];
+
+    return this.db.transaction(async (tx) => {
+      const [firstStage] = await tx
+        .select({ id: crmPipelineStages.id })
+        .from(crmPipelineStages)
+        .where(eq(crmPipelineStages.pipelineId, pipelineId))
+        .orderBy(asc(crmPipelineStages.position), asc(crmPipelineStages.id))
+        .limit(1);
+      if (!firstStage) throw new BadRequestException('This pipeline has no stages.');
+
+      const existingClients = await tx
+        .select({ id: clients.id })
+        .from(clients)
+        .where(inArray(clients.id, uniqueClientIds));
+      const existingClientIds = existingClients.map(({ id }) => id);
+      if (existingClientIds.length === 0) {
+        return {
+          addedCount: 0,
+          alreadyInPipelineCount: 0,
+          missingCount: uniqueClientIds.length,
+        };
+      }
+
+      const addedDeals = await tx
+        .insert(crmDeals)
+        .values(
+          existingClientIds.map((clientId) => ({
+            clientId,
+            pipelineId,
+            stageId: firstStage.id,
+          })),
+        )
+        .onConflictDoNothing()
+        .returning({ clientId: crmDeals.clientId });
+
+      return {
+        addedCount: addedDeals.length,
+        alreadyInPipelineCount: existingClientIds.length - addedDeals.length,
+        missingCount: uniqueClientIds.length - existingClientIds.length,
+      };
+    });
   }
 
   /** Moves a deal to another stage of the same pipeline. */

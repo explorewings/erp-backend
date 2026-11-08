@@ -27,6 +27,11 @@ export class CalendarController {
     return this.calendar.feed(this.viewer(req), query.page ?? 1);
   }
 
+  @Get(':id/history')
+  history(@Param('id', ParseIntPipe) id: number, @Query('page') page: number, @Request() req: any) {
+    return this.calendar.history(this.viewer(req), id, page ?? 1);
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number, @Request() req: any) {
     return this.calendar.findOne(this.viewer(req), id);

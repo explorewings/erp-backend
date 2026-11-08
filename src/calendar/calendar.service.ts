@@ -122,6 +122,12 @@ export class CalendarService {
     return this.log.feed(viewer, page);
   }
 
+  /** Audit trail of one event; visibility is enforced by the same predicate as findOne. */
+  async history(viewer: Viewer, id: number, page = 1) {
+    await this.loadVisible(viewer, id); // 404 when the event is invisible to the viewer
+    return this.log.forEvent(id, page);
+  }
+
   // --------------------------------------------------------------- create
 
   async create(viewer: Viewer, dto: CreateCalendarEventDto) {
