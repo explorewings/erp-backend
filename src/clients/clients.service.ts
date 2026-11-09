@@ -1,8 +1,66 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
-import { clientImports, clients } from '../schema';
+import { clientActivityLog, clientImports, clients, users } from '../schema';
 import { CreateClientDto } from './dto/create-client.dto';
+
+/** Fields the list returns, plus provenance for the details History tab. */
+const clientWithProvenance = {
+  id: clients.id,
+  name: clients.name,
+  email: clients.email,
+  phoneNumber: clients.phoneNumber,
+  customFields: clients.customFields,
+  importId: clients.importId,
+  source: clients.source,
+  createdBy: clients.createdBy,
+  createdByUsername: users.username,
+  importName: clientImports.name,
+  createdAt: clients.createdAt,
+  updatedAt: clients.updatedAt,
+};
+
+export type ClientActivityMeta = {
+  source?: string;
+  importId?: number | null;
+  importName?: string | null;
+  via?: string;
+  pipelineId?: number;
+  pipelineName?: string | null;
+  changedFields?: string[];
+};
+
+/** Write one activity-log entry. Accepts a tx handle or the main db. */
+export async function logClientActivity(
+  db: DrizzleDb | any,
+  input: { clientId: number; actorId?: string | null; action: 'created' | 'updated' | 'added_to_pipeline'; meta?: ClientActivityMeta },
+) {
+  await db.insert(clientActivityLog).values({
+    clientId: input.clientId,
+    actorId: input.actorId ?? null,
+    action: input.action,
+    meta: input.meta ?? null,
+  });
+}
+
+/**
+ * Write many activity-log entries in ONE statement (bulk add / import
+ * batches). One insert per row was the main slowdown in bulk operations.
+ */
+export async function logClientActivities(
+  db: DrizzleDb | any,
+  inputs: { clientId: number; actorId?: string | null; action: 'created' | 'updated' | 'added_to_pipeline'; meta?: ClientActivityMeta }[],
+) {
+  if (!inputs.length) return;
+  await db.insert(clientActivityLog).values(
+    inputs.map((input) => ({
+      clientId: input.clientId,
+      actorId: input.actorId ?? null,
+      action: input.action,
+      meta: input.meta ?? null,
+    })),
+  );
+}
 
 @Injectable()
 export class ClientsService {
@@ -31,8 +89,10 @@ export class ClientsService {
       .where(where);
     const total = countRows[0]?.count ?? 0;
     const items = await this.db
-      .select()
+      .select(clientWithProvenance)
       .from(clients)
+      .leftJoin(users, eq(users.id, clients.createdBy))
+      .leftJoin(clientImports, eq(clientImports.id, clients.importId))
       .where(where)
       .orderBy(desc(clients.createdAt), desc(clients.id))
       .limit(pageSize)
@@ -41,22 +101,79 @@ export class ClientsService {
     return { items, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
   }
 
-  async create(dto: CreateClientDto) {
-    const [created] = await this.db
-      .insert(clients)
-      .values(this.normalizeClientInput(dto))
-      .returning();
-    if (!created) throw new Error('Unable to create client.');
-    return created;
+  async create(dto: CreateClientDto, actorId?: string | null) {
+    return this.db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(clients)
+        .values({ ...this.normalizeClientInput(dto), source: 'manual', createdBy: actorId ?? null })
+        .returning();
+      if (!created) throw new Error('Unable to create client.');
+      await logClientActivity(tx, { clientId: created.id, actorId, action: 'created', meta: { source: 'manual' } });
+      return this.withProvenance(tx, created.id);
+    });
   }
 
-  async update(id: number, dto: CreateClientDto) {
-    const [updated] = await this.db
-      .update(clients)
-      .set(this.normalizeClientInput(dto))
+  async update(id: number, dto: CreateClientDto, actorId?: string | null) {
+    const input = this.normalizeClientInput(dto);
+    return this.db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(clients).where(eq(clients.id, id)).limit(1);
+      if (!existing) return null;
+      const changedFields: string[] = (['name', 'email', 'phoneNumber'] as const).filter(
+        (field) => (existing[field] ?? null) !== (input[field] ?? null),
+      );
+      const oldKeys = new Set(Object.keys(existing.customFields || {}));
+      const newKeys = new Set(Object.keys(input.customFields || {}));
+      const customChanged =
+        oldKeys.size !== newKeys.size ||
+        [...newKeys].some((key) => (existing.customFields || {})[key] !== input.customFields[key]);
+      if (customChanged) changedFields.push('customFields');
+      const [updated] = await tx
+        .update(clients)
+        .set({ ...input, updatedAt: new Date() })
+        .where(eq(clients.id, id))
+        .returning();
+      if (!updated) return null;
+      if (changedFields.length) {
+        await logClientActivity(tx, { clientId: id, actorId, action: 'updated', meta: { changedFields } });
+      }
+      return this.withProvenance(tx, id);
+    });
+  }
+
+  /** One client with provenance (adder username + import name), or null. */
+  private async withProvenance(db: DrizzleDb | any, id: number) {
+    const [row] = await db
+      .select(clientWithProvenance)
+      .from(clients)
+      .leftJoin(users, eq(users.id, clients.createdBy))
+      .leftJoin(clientImports, eq(clientImports.id, clients.importId))
       .where(eq(clients.id, id))
-      .returning();
-    return updated ?? null;
+      .limit(1);
+    return row ?? null;
+  }
+
+  /** Thread history for one client, latest first, 20 per page (calendar-style). */
+  async history(id: number, page = 1) {
+    const [existing] = await this.db.select({ id: clients.id }).from(clients).where(eq(clients.id, id)).limit(1);
+    if (!existing) throw new NotFoundException(`Client ${id} not found`);
+    const pageSize = 20;
+    const offset = (Math.max(1, Number(page) || 1) - 1) * pageSize;
+    const rows = await this.db
+      .select({
+        id: clientActivityLog.id,
+        action: clientActivityLog.action,
+        meta: clientActivityLog.meta,
+        createdAt: clientActivityLog.createdAt,
+        actor: { id: users.id, username: users.username },
+      })
+      .from(clientActivityLog)
+      .leftJoin(users, eq(users.id, clientActivityLog.actorId))
+      .where(eq(clientActivityLog.clientId, id))
+      .orderBy(desc(clientActivityLog.createdAt), desc(clientActivityLog.id))
+      .limit(pageSize + 1)
+      .offset(offset);
+    const hasMore = rows.length > pageSize;
+    return { items: hasMore ? rows.slice(0, pageSize) : rows, hasMore, page: Math.max(1, Number(page) || 1) };
   }
 
   async remove(id: number) {

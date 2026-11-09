@@ -64,6 +64,7 @@ export const crmDeals = pgTable(
       .notNull()
       .references(() => crmPipelines.id, { onDelete: 'restrict' }),
     stageId: integer('stage_id').notNull(),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -75,6 +76,7 @@ export const crmDeals = pgTable(
     }).onDelete('restrict'),
     unique('crm_deals_pipeline_client_unique').on(table.pipelineId, table.clientId),
     index('crm_deals_client_id_idx').on(table.clientId),
+    index('crm_deals_created_by_idx').on(table.createdBy),
     index('crm_deals_pipeline_stage_idx').on(table.pipelineId, table.stageId),
   ],
 );

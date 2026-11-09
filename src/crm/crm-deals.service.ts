@@ -1,8 +1,8 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
-import { ClientsService } from '../clients/clients.service';
+import { ClientsService, logClientActivity, logClientActivities } from '../clients/clients.service';
 import { DRIZZLE, DrizzleDb } from '../database.module';
-import { ClientRow, CrmDealRow, clients, crmDeals, crmPipelineStages } from '../schema';
+import { ClientRow, CrmDealRow, clients, crmDeals, crmPipelineStages, users } from '../schema';
 import { CrmUser } from './crm-access';
 import { CrmService } from './crm.service';
 import { CreateCrmDealDto } from './dto/create-deal.dto';
@@ -19,11 +19,13 @@ const dealClientColumns = {
 
 type DealClient = Pick<ClientRow, 'id' | 'name' | 'email' | 'phoneNumber' | 'customFields'>;
 
-function toDealResponse(deal: CrmDealRow, client: DealClient) {
+function toDealResponse(deal: CrmDealRow, client: DealClient, createdByUsername?: string | null) {
   return {
     id: deal.id,
     pipelineId: deal.pipelineId,
     stageId: deal.stageId,
+    createdBy: deal.createdBy,
+    createdByUsername: createdByUsername ?? null,
     createdAt: deal.createdAt,
     updatedAt: deal.updatedAt,
     client: {
@@ -52,13 +54,14 @@ export class CrmDealsService {
     await this.pipelines.getVisiblePipeline(pipelineId, user);
 
     const rows = await this.db
-      .select({ deal: crmDeals, client: dealClientColumns })
+      .select({ deal: crmDeals, client: dealClientColumns, createdByUsername: users.username })
       .from(crmDeals)
       .innerJoin(clients, eq(clients.id, crmDeals.clientId))
+      .leftJoin(users, eq(users.id, crmDeals.createdBy))
       .where(eq(crmDeals.pipelineId, pipelineId))
       .orderBy(desc(crmDeals.createdAt), desc(crmDeals.id));
 
-    return rows.map((row) => toDealResponse(row.deal, row.client));
+    return rows.map((row) => toDealResponse(row.deal, row.client, row.createdByUsername));
   }
 
   /**
@@ -66,7 +69,7 @@ export class CrmDealsService {
    * transaction: either both are saved or neither is.
    */
   async createDealWithClient(pipelineId: number, dto: CreateCrmDealDto, user: CrmUser) {
-    await this.pipelines.getVisiblePipeline(pipelineId, user);
+    const { pipeline } = await this.pipelines.getVisiblePipeline(pipelineId, user);
     const clientInput = this.clientsService.normalizeClientInput(dto.client);
 
     try {
@@ -79,13 +82,22 @@ export class CrmDealsService {
           .limit(1);
         if (!firstStage) throw new BadRequestException('This pipeline has no stages.');
 
-        const [client] = await tx.insert(clients).values(clientInput).returning(dealClientColumns);
+        const [client] = await tx
+          .insert(clients)
+          .values({ ...clientInput, source: 'manual', createdBy: user.id })
+          .returning(dealClientColumns);
+        await logClientActivity(tx, {
+          clientId: client.id,
+          actorId: user.id,
+          action: 'created',
+          meta: { source: 'manual', via: 'crm', pipelineId, pipelineName: pipeline.name },
+        });
         const [deal] = await tx
           .insert(crmDeals)
-          .values({ clientId: client.id, pipelineId, stageId: firstStage.id })
+          .values({ clientId: client.id, pipelineId, stageId: firstStage.id, createdBy: user.id })
           .returning();
 
-        return toDealResponse(deal, client);
+        return toDealResponse(deal, client, user.username);
       });
     } catch (error) {
       if (isUniqueViolation(error)) {
@@ -97,7 +109,7 @@ export class CrmDealsService {
 
   /** Adds existing clients to the first stage, skipping duplicates in this pipeline. */
   async addExistingClients(pipelineId: number, clientIds: number[], user: CrmUser) {
-    await this.pipelines.getVisiblePipeline(pipelineId, user);
+    const { pipeline } = await this.pipelines.getVisiblePipeline(pipelineId, user);
     const uniqueClientIds = [...new Set(clientIds)];
 
     return this.db.transaction(async (tx) => {
@@ -129,10 +141,23 @@ export class CrmDealsService {
             clientId,
             pipelineId,
             stageId: firstStage.id,
+            createdBy: user.id,
           })),
         )
         .onConflictDoNothing()
         .returning({ clientId: crmDeals.clientId });
+
+      // Record who added each client into this pipeline (client History thread)
+      // in ONE statement — one insert per row slowed bulk adds down.
+      await logClientActivities(
+        tx,
+        addedDeals.map(({ clientId }) => ({
+          clientId,
+          actorId: user.id,
+          action: 'added_to_pipeline' as const,
+          meta: { pipelineId, pipelineName: pipeline.name },
+        })),
+      );
 
       return {
         addedCount: addedDeals.length,
@@ -177,7 +202,10 @@ export class CrmDealsService {
         .from(clients)
         .where(eq(clients.id, updated.clientId))
         .limit(1);
-      return toDealResponse(updated, client);
+      const [creator] = updated.createdBy
+        ? await tx.select({ username: users.username }).from(users).where(eq(users.id, updated.createdBy)).limit(1)
+        : [];
+      return toDealResponse(updated, client, creator?.username ?? null);
     });
   }
 }

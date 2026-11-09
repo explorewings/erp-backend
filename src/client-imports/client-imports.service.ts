@@ -8,7 +8,7 @@ import {
 import { and, desc, eq, exists, ne, or, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { clientImports, clients } from '../schema';
-import { ClientsService } from '../clients/clients.service';
+import { ClientsService, logClientActivities } from '../clients/clients.service';
 import { CreateClientImportDto } from './dto/create-client-import.dto';
 import { AppendClientImportBatchDto } from './dto/append-client-import-batch.dto';
 
@@ -105,8 +105,20 @@ export class ClientImportsService {
       const normalizedRows = dto.rows.map((row) => ({
         ...this.clientsService.normalizeClientInput(row),
         importId: id,
+        source: 'imported' as const,
+        createdBy: userId,
       }));
-      await tx.insert(clients).values(normalizedRows);
+      const inserted = await tx.insert(clients).values(normalizedRows).returning({ id: clients.id });
+      // One statement for the whole batch (per-row inserts slowed imports down).
+      await logClientActivities(
+        tx,
+        inserted.map(({ id: clientId }) => ({
+          clientId,
+          actorId: userId,
+          action: 'created' as const,
+          meta: { source: 'imported', importId: id, importName: clientImport.name },
+        })),
+      );
 
       const importedRows = clientImport.importedRows + normalizedRows.length;
       const [updated] = await tx

@@ -1,8 +1,10 @@
-import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { CreateClientDto } from './dto/create-client.dto';
 import { ClientsService } from './clients.service';
+
+type AuthedRequest = { user: { id: string } };
 
 @Controller('clients')
 @UseGuards(JwtGuard, RolesGuard)
@@ -51,14 +53,20 @@ export class ClientsController {
 
   /** Any signed-in user may add clients; editing and deleting stay restricted. */
   @Post()
-  create(@Body() dto: CreateClientDto) {
-    return this.clients.create(dto);
+  create(@Req() req: AuthedRequest, @Body() dto: CreateClientDto) {
+    return this.clients.create(dto, req.user.id);
+  }
+
+  /** Thread history for one client (who added/edited, when, source). */
+  @Get(':id/history')
+  history(@Param('id', ParseIntPipe) id: number, @Query('page') page: number) {
+    return this.clients.history(id, page ?? 1);
   }
 
   @Patch(':id')
   @Roles('superadmin', 'superuser')
-  async update(@Param('id', ParseIntPipe) id: number, @Body() dto: CreateClientDto) {
-    const updated = await this.clients.update(id, dto);
+  async update(@Req() req: AuthedRequest, @Param('id', ParseIntPipe) id: number, @Body() dto: CreateClientDto) {
+    const updated = await this.clients.update(id, dto, req.user.id);
     if (!updated) throw new NotFoundException(`Client ${id} not found`);
     return updated;
   }

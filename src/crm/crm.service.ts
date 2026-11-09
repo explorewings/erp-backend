@@ -164,7 +164,7 @@ export class CrmService {
     const accessByPipeline = groupBy(accessRows, (access) => access.pipelineId);
     const dealCountsByPipeline = new Map(
       dealCountRows.map(({ pipelineId, count }) => [pipelineId, count]),
-    )
+    );
 
     return visible.map((pipeline) =>
       toPipelineResponse(
