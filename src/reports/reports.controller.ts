@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -39,6 +40,7 @@ export class ReportsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('date') date?: string,
+    @Query('userId') userId?: string,
   ) {
     const parsedPage = page === undefined ? 1 : Number(page);
     const parsedLimit = limit === undefined ? 100 : Number(limit);
@@ -51,7 +53,10 @@ export class ReportsController {
     if (date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new BadRequestException('Date must use the YYYY-MM-DD format.');
     }
-    return this.reports.list(req.user, parsedPage, parsedLimit, date);
+    if (userId !== undefined && !/^[0-9a-f-]{36}$/i.test(userId)) {
+      throw new BadRequestException('Invalid user id.');
+    }
+    return this.reports.list(req.user, parsedPage, parsedLimit, date, userId);
   }
 
   @Post()
@@ -86,5 +91,11 @@ export class ReportsController {
     @Body() dto: UpdateReportRemarksDto,
   ) {
     return this.reports.updateRemarks(id, dto.remarks, req.user);
+  }
+
+  @Delete(':id')
+  @Roles(...reportRoles)
+  remove(@Req() req: AuthedRequest, @Param('id', ParseIntPipe) id: number) {
+    return this.reports.remove(id, req.user);
   }
 }

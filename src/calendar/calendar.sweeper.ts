@@ -1,8 +1,8 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { and, eq, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { DRIZZLE, DrizzleDb } from '../database.module';
-import { calendarEvents } from '../schema';
+import { calendarEvents, calendarMeetingMembers, notifications } from '../schema';
 import { CalendarLogService } from './calendar-log.service';
 import { CalendarNotifier } from './calendar.notifier';
 import { FAILABLE_TASK_STATUSES } from './constants/statuses';
@@ -13,7 +13,8 @@ const LOCK_KEY = 814506244; // one sweeper across all running API instances
 /**
  * Every 5 minutes (plan §1.2, A5):
  * 1. expired holds return to their previous status;
- * 2. assigned/progress tasks past their deadline are stored as `failed`.
+ * 2. assigned/progress tasks past their deadline are stored as `failed`;
+ * 3. meetings that have just started are announced once ("live").
  * Holds run first, so a hold that ended after the deadline fails in the same pass.
  * Uses the same predicate as read-time derivation (isTaskFailed) in SQL form.
  */
@@ -50,7 +51,12 @@ export class CalendarSweeper implements OnModuleInit, OnModuleDestroy {
       try {
         const lifted = await this.liftExpiredHolds(now);
         const failed = await this.failOverdue(now);
-        if (lifted || failed) this.logger.log(`Calendar sweep: ${lifted} holds lifted, ${failed} tasks failed.`);
+        const live = await this.announceLiveMeetings(now);
+        if (lifted || failed || live) {
+          this.logger.log(
+            `Calendar sweep: ${lifted} holds lifted, ${failed} tasks failed, ${live} meetings went live.`,
+          );
+        }
       } finally {
         await client.query('SELECT pg_advisory_unlock($1)', [LOCK_KEY]);
       }
@@ -87,8 +93,58 @@ export class CalendarSweeper implements OnModuleInit, OnModuleDestroy {
     return due.length;
   }
 
-  private async failOverdue(now: Date) {
+  /**
+   * Meetings whose start has passed but whose end has not: announce each one
+   * once. `live` is derived from the time window (meetings store only
+   * scheduled|cancelled), so de-duplication looks for an existing
+   * `meeting_live` notification row for that event.
+   */
+  private async announceLiveMeetings(now: Date) {
     const e = calendarEvents;
+    const live = await this.db
+      .select({ id: e.id, type: e.type, title: e.title, visibility: e.visibility, createdBy: e.createdBy })
+      .from(e)
+      .where(
+        and(
+          eq(e.type, 'meeting'),
+          eq(e.status, 'scheduled'),
+          lte(e.startsAt, now),
+          gt(e.endsAt, now),
+          isNull(e.deletedAt),
+        ),
+      );
+    if (!live.length) return 0;
+
+    const already = await this.db
+      .select({ entityId: notifications.entityId })
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.kind, 'meeting_live'),
+          inArray(
+            notifications.entityId,
+            live.map((row) => String(row.id)),
+          ),
+        ),
+      );
+    const announced = new Set(already.map((row) => row.entityId));
+
+    let sent = 0;
+    for (const row of live) {
+      if (announced.has(String(row.id))) continue;
+      const members = await this.db
+        .select({ userId: calendarMeetingMembers.userId })
+        .from(calendarMeetingMembers)
+        .where(eq(calendarMeetingMembers.eventId, row.id));
+      await this.db.transaction(async (tx) => {
+        await this.notifier.meetingLive(tx, row, members.map((m) => m.userId));
+      });
+      sent += 1;
+    }
+    return sent;
+  }
+
+  private async failOverdue(now: Date) {    const e = calendarEvents;
     return this.db.transaction(async (tx) => {
       const failed = await tx
         .update(e)

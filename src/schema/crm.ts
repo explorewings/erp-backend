@@ -14,6 +14,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { clients } from './clients';
 import { users } from './users';
+import type { CrmDealAssignmentMethod } from '../crm/crm-assignment';
 
 export const crmPipelines = pgTable(
   'crm_pipelines',
@@ -24,10 +25,20 @@ export const crmPipelines = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    dealAssignmentMethod: text('deal_assignment_method')
+      .$type<CrmDealAssignmentMethod>()
+      .notNull()
+      .default('creator_manual'),
+    roundRobinCursor: integer('round_robin_cursor').notNull().default(0),
   },
   (table) => [
     check('crm_pipelines_name_not_empty', sql`BTRIM(${table.name}) <> ''`),
     check('crm_pipelines_position_nonnegative', sql`${table.position} >= 0`),
+    check(
+      'crm_pipelines_deal_assignment_method_valid',
+      sql`${table.dealAssignmentMethod} IN ('round_robin', 'creator_manual', 'least_loaded')`,
+    ),
+    check('crm_pipelines_round_robin_cursor_nonnegative', sql`${table.roundRobinCursor} >= 0`),
     index('crm_pipelines_position_idx').on(table.position, table.id),
   ],
 );
@@ -53,34 +64,6 @@ export const crmPipelineStages = pgTable(
   ],
 );
 
-export const crmDeals = pgTable(
-  'crm_deals',
-  {
-    id: serial('id').primaryKey(),
-    clientId: integer('client_id')
-      .notNull()
-      .references(() => clients.id, { onDelete: 'cascade' }),
-    pipelineId: integer('pipeline_id')
-      .notNull()
-      .references(() => crmPipelines.id, { onDelete: 'restrict' }),
-    stageId: integer('stage_id').notNull(),
-    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [
-    foreignKey({
-      name: 'crm_deals_pipeline_stage_fk',
-      columns: [table.pipelineId, table.stageId],
-      foreignColumns: [crmPipelineStages.pipelineId, crmPipelineStages.id],
-    }).onDelete('restrict'),
-    unique('crm_deals_pipeline_client_unique').on(table.pipelineId, table.clientId),
-    index('crm_deals_client_id_idx').on(table.clientId),
-    index('crm_deals_created_by_idx').on(table.createdBy),
-    index('crm_deals_pipeline_stage_idx').on(table.pipelineId, table.stageId),
-  ],
-);
-
 export const crmPipelineUsers = pgTable(
   'crm_pipeline_users',
   {
@@ -95,6 +78,41 @@ export const crmPipelineUsers = pgTable(
   (table) => [
     primaryKey({ name: 'crm_pipeline_users_pkey', columns: [table.pipelineId, table.userId] }),
     index('crm_pipeline_users_user_id_idx').on(table.userId),
+  ],
+);
+
+export const crmDeals = pgTable(
+  'crm_deals',
+  {
+    id: serial('id').primaryKey(),
+    clientId: integer('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    pipelineId: integer('pipeline_id')
+      .notNull()
+      .references(() => crmPipelines.id, { onDelete: 'restrict' }),
+    stageId: integer('stage_id').notNull(),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    assignedUserId: uuid('assigned_user_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      name: 'crm_deals_pipeline_stage_fk',
+      columns: [table.pipelineId, table.stageId],
+      foreignColumns: [crmPipelineStages.pipelineId, crmPipelineStages.id],
+    }).onDelete('restrict'),
+    foreignKey({
+      name: 'crm_deals_pipeline_assignee_fk',
+      columns: [table.pipelineId, table.assignedUserId],
+      foreignColumns: [crmPipelineUsers.pipelineId, crmPipelineUsers.userId],
+    }).onDelete('restrict'),
+    unique('crm_deals_pipeline_client_unique').on(table.pipelineId, table.clientId),
+    index('crm_deals_client_id_idx').on(table.clientId),
+    index('crm_deals_created_by_idx').on(table.createdBy),
+    index('crm_deals_pipeline_stage_idx').on(table.pipelineId, table.stageId),
+    index('crm_deals_pipeline_assigned_user_idx').on(table.pipelineId, table.assignedUserId),
   ],
 );
 

@@ -23,7 +23,12 @@ export class MenuAccessGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const user = request.user as { id?: string } | undefined;
     if (!user?.id || !(await this.access.hasMenuAccess(user.id, code))) {
-      throw new ForbiddenException('You do not have access to this menu.');
+      // Name the section so the message reads as a permissions issue for that
+      // feature, not as a claim that the whole menu system is broken.
+      const section = code.replace(/^menu:/, '');
+      throw new ForbiddenException(
+        `Your account does not have access to ${section}. Ask a superadmin to grant it.`,
+      );
     }
 
     return true;

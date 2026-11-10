@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq, ilike, or, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { NewUserRow, UserRow, users } from '../schema';
 
@@ -27,5 +27,30 @@ export class UsersService {
       .then((rows) =>
         rows.map(({ passwordHash: _passwordHash, ...rest }) => rest),
       );
+  }
+
+  /** Debounced type-ahead search used by pickers (e.g. filter reports by user). */
+  async search(
+    term: string | undefined,
+    limit = 20,
+  ): Promise<{ items: Omit<UserRow, 'passwordHash'>[]; total: number }> {
+    const trimmed = term?.trim();
+    const where = trimmed
+      ? or(ilike(users.username, `%${trimmed}%`), ilike(users.email, `%${trimmed}%`))
+      : undefined;
+
+    const [countRows, rows] = await Promise.all([
+      this.db.select({ count: sql<number>`count(*)::int` }).from(users).where(where),
+      this.db.query.users.findMany({
+        where,
+        orderBy: (t, { asc }) => asc(t.username),
+        limit,
+      }),
+    ]);
+
+    return {
+      items: rows.map(({ passwordHash: _passwordHash, ...rest }) => rest),
+      total: countRows[0]?.count ?? 0,
+    };
   }
 }

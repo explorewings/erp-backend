@@ -21,6 +21,7 @@ import {
 import { canManagePipeline, canViewPipeline, CrmUser, isSuperRole } from './crm-access';
 import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
 import { isUniqueViolation } from './db-errors';
+import type { CrmDealAssignmentMethod } from './crm-assignment';
 
 function toStageResponse(stage: CrmPipelineStageRow) {
   return {
@@ -44,6 +45,7 @@ function toPipelineResponse(
     id: pipeline.id,
     name: pipeline.name,
     position: pipeline.position,
+    dealAssignmentMethod: pipeline.dealAssignmentMethod,
     dealCount,
     createdAt: pipeline.createdAt,
     updatedAt: pipeline.updatedAt,
@@ -264,6 +266,45 @@ export class CrmService {
       });
     if (!updated) throw new NotFoundException('Pipeline not found.');
     return updated;
+  }
+
+  async updateDealAssignmentMethod(
+    pipelineId: number,
+    method: CrmDealAssignmentMethod,
+    user: CrmUser,
+  ) {
+    await this.getVisiblePipeline(pipelineId, user);
+
+    return this.db.transaction(async (tx) => {
+      const [pipeline] = await tx
+        .select({
+          id: crmPipelines.id,
+          dealAssignmentMethod: crmPipelines.dealAssignmentMethod,
+          roundRobinCursor: crmPipelines.roundRobinCursor,
+        })
+        .from(crmPipelines)
+        .where(eq(crmPipelines.id, pipelineId))
+        .for('update');
+      if (!pipeline) throw new NotFoundException('Pipeline not found.');
+
+      const [updated] = await tx
+        .update(crmPipelines)
+        .set({
+          dealAssignmentMethod: method,
+          roundRobinCursor:
+            method === 'round_robin' && pipeline.dealAssignmentMethod !== method
+              ? 0
+              : pipeline.roundRobinCursor,
+          updatedAt: new Date(),
+        })
+        .where(eq(crmPipelines.id, pipelineId))
+        .returning({
+          id: crmPipelines.id,
+          dealAssignmentMethod: crmPipelines.dealAssignmentMethod,
+        });
+      if (!updated) throw new NotFoundException('Pipeline not found.');
+      return updated;
+    });
   }
 
   /** Counts shown in the delete confirmation. */

@@ -1,6 +1,6 @@
-import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { AccessService } from '../access/access.service';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { ReportRow, reports, users } from '../schema';
@@ -81,10 +81,17 @@ export class ReportsService {
     }
   }
 
-  async list(user: ReportsUser, page = 1, pageSize = 100, reportDate?: string) {
+  async list(user: ReportsUser, page = 1, pageSize = 100, reportDate?: string, createdById?: string) {
     await this.assertCanUseReports(user);
-    const scope = isElevated(user) ? undefined : eq(reports.createdBy, user.id);
-    const where = reportDate ? (scope ? and(scope, eq(reports.reportDate, reportDate)) : eq(reports.reportDate, reportDate)) : scope;
+    const conditions: SQL[] = [];
+    if (!isElevated(user)) {
+      // Non-elevated users always stay scoped to their own reports.
+      conditions.push(eq(reports.createdBy, user.id));
+    } else if (createdById) {
+      conditions.push(eq(reports.createdBy, createdById));
+    }
+    if (reportDate) conditions.push(eq(reports.reportDate, reportDate));
+    const where = conditions.length ? and(...conditions) : undefined;
     const countRows = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(reports)
@@ -105,12 +112,14 @@ export class ReportsService {
       pageSize,
       totalPages: Math.ceil(total / pageSize),
       date: reportDate ?? null,
+      userId: createdById ?? null,
     };
   }
 
   async create(dto: CreateReportDto, file: UploadedReportFile | undefined, user: ReportsUser) {
     await this.assertCanUseReports(user);
     const reportItems = normalizeReportItems(dto.reports);
+    await this.assertNoExistingReportForDate(user, dto.reportDate);
     const attachment = await this.buildAttachment(dto.attachmentMode, dto.attachmentUrl, file);
     let created: ReportRow;
     try {
@@ -127,6 +136,8 @@ export class ReportsService {
       created = row;
     } catch (error) {
       if (attachment.attachmentKey) await this.storage.delete(this.storage.getBucket(), attachment.attachmentKey);
+      // Two tabs, or a retry racing the first insert: surface the friendly message.
+      if (this.isUniqueViolation(error)) await this.assertNoExistingReportForDate(user, dto.reportDate);
       throw error;
     }
     const [creator] = await this.db.select({ username: users.username }).from(users).where(eq(users.id, user.id)).limit(1);
@@ -144,6 +155,9 @@ export class ReportsService {
         const [existing] = await tx.select().from(reports).where(eq(reports.id, id)).for('update');
         if (!existing) throw new NotFoundException(`Report ${id} not found.`);
         this.assertCanEdit(existing, user);
+        if (dto.reportDate !== existing.reportDate) {
+          await this.assertNoExistingReportForDate(user, dto.reportDate);
+        }
         if (dto.attachmentMode === 'keep' && (file || dto.attachmentUrl)) {
           throw new BadRequestException('Remove the unused attachment before keeping the current one.');
         }
@@ -209,11 +223,46 @@ export class ReportsService {
     return this.toResponse(updated, creator?.username ?? null);
   }
 
+  async remove(id: number, user: ReportsUser) {
+    await this.assertCanUseReports(user);
+    const [existing] = await this.db.select().from(reports).where(eq(reports.id, id)).limit(1);
+    if (!existing) throw new NotFoundException(`Report ${id} not found.`);
+    this.assertCanEdit(existing, user);
+    await this.db.delete(reports).where(eq(reports.id, id));
+    if (existing.attachmentKey) {
+      try {
+        await this.storage.delete(this.storage.getBucket(), existing.attachmentKey);
+      } catch {
+        return { id, cleanupWarning: 'The report was deleted, but its file could not be removed from storage.' };
+      }
+    }
+    return { id };
+  }
+
+  /** Blocks a second report for the same person and same day. */
+  private async assertNoExistingReportForDate(user: ReportsUser, reportDate: string): Promise<void> {
+    const [existing] = await this.db
+      .select({ id: reports.id })
+      .from(reports)
+      .where(and(eq(reports.createdBy, user.id), eq(reports.reportDate, reportDate)))
+      .limit(1);
+    if (!existing) return;
+    throw new ConflictException(
+      'You already submitted a report for this date.',
+    );
+  }
+
+  private isUniqueViolation(error: unknown): boolean {
+    return typeof error === 'object' && error !== null && (error as { code?: string }).code === '23505';
+  }
+
   private assertCanEdit(report: ReportRow, user: ReportsUser): void {
     if (isElevated(user)) return;
     if (report.createdBy !== user.id) throw new ForbiddenException('You can only edit your own reports.');
     if (Date.now() - report.submittedAt.getTime() > EDIT_WINDOW_MS) {
-      throw new ForbiddenException('Reports can only be edited for 15 minutes after submission.');
+      throw new ForbiddenException(
+        'This report can no longer be edited or deleted: it is past the 15-minute window after submission.',
+      );
     }
   }
 

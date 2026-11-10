@@ -101,6 +101,28 @@ export class CalendarNotifier {
     );
   }
 
+  /**
+   * A meeting has just started ("live"). Fired once per meeting by the sweeper
+   * when `starts_at <= now < ends_at`; the caller de-duplicates against the
+   * notification rows already written for this entity. Open meetings reach
+   * everyone, private ones only the invitees and the creator.
+   */
+  async meetingLive(
+    tx: Writer,
+    row: { id: number; type: string; title: string; visibility: string | null; createdBy: string },
+    memberIds: string[],
+  ) {
+    await this.notifications.notify(
+      {
+        ...this.base(row, null, 'meeting_live'),
+        recipients: row.visibility === 'open' ? await this.notifications.activeUserIds() : [...memberIds, row.createdBy],
+        title: 'Meeting is live',
+        body: `${q(row.title)} has started.`,
+      },
+      tx,
+    );
+  }
+
   /** A workflow step on a task, or cancelling a meeting. */
   async step(tx: Writer, viewer: Viewer, row: CalendarEventRow, action: string, reason: string | null, memberIds: string[] = []) {
     if (row.type === 'meeting' && action === 'cancel_event') {

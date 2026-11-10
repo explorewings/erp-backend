@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { check, date, index, integer, jsonb, pgTable, serial, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { check, date, index, integer, jsonb, pgTable, serial, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { users } from './users';
 
 export const reports = pgTable(
@@ -43,6 +43,8 @@ export const reports = pgTable(
     index('reports_report_date_idx').on(table.reportDate),
     index('reports_created_by_idx').on(table.createdBy),
     index('reports_submitted_at_idx').on(table.submittedAt),
+    // One report per person per day.
+    unique('reports_created_by_report_date_unique').on(table.createdBy, table.reportDate),
   ],
 );
 

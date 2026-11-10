@@ -24,6 +24,11 @@ export class CalendarController {
     return this.calendar.list(this.viewer(req), query);
   }
 
+  @Get('people')
+  people() {
+    return this.calendar.people();
+  }
+
   @Get('updates')
   updates(@Query() query: UpdatesQueryDto, @Request() req: any) {
     return this.calendar.feed(this.viewer(req), query.page ?? 1);

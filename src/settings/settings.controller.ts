@@ -10,6 +10,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -18,7 +19,7 @@ import { and, eq } from 'drizzle-orm';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { DRIZZLE, DrizzleDb } from '../database.module';
-import { access, accessItems, NewUserRow, UserRow, users } from '../schema';
+import { access, accessItems, crmDeals, NewUserRow, UserRow, users } from '../schema';
 import { UsersService } from '../users/users.service';
 import { CheckUserAvailabilityDto } from './dto/check-user-availability.dto';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -45,8 +46,13 @@ export class SettingsController {
 
   @Get('users')
   @Roles('superadmin', 'superuser')
-  async getUsers() {
-    return this.users.findAll();
+  async getUsers(
+    @Query('search') search?: string,
+    @Query('limit') limit?: string,
+  ) {
+    // No search term keeps the existing full-list behaviour.
+    if (search === undefined && limit === undefined) return this.users.findAll();
+    return this.users.search(search, Math.min(Math.max(Number(limit) || 20, 1), 50));
   }
 
   @Post('users/check-availability')
@@ -197,9 +203,15 @@ export class SettingsController {
       throw new BadRequestException('The superadmin account cannot be deleted.');
     }
     try {
-      await this.db.delete(users).where(eq(users.id, id));
+      await this.db.transaction(async (tx) => {
+        await tx
+          .update(crmDeals)
+          .set({ assignedUserId: null, updatedAt: new Date() })
+          .where(eq(crmDeals.assignedUserId, id));
+        await tx.delete(users).where(eq(users.id, id));
+      });
     } catch (error) {
-      // Calendar items (and other records) reference the user with ON DELETE RESTRICT.
+      // Calendar items reference the user with RESTRICT.
       const code = (error as { code?: string; cause?: { code?: string } }).code ?? (error as { cause?: { code?: string } }).cause?.code;
       if (code === '23503') {
         throw new BadRequestException('This user still owns or is assigned calendar items. Deactivate them instead.');

@@ -9,12 +9,14 @@ import { CalendarLogService } from './calendar-log.service';
 import { CalendarSweeper } from './calendar.sweeper';
 import { CalendarNotifier } from './calendar.notifier';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AccessModule } from '../access/access.module';
 
 @Module({
   controllers: [CalendarController],
   providers: [RolesGuard, CalendarPolicy, CalendarLogService, CalendarNotifier, CalendarService, CalendarSweeper],
   imports: [
     NotificationsModule,
+    AccessModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({

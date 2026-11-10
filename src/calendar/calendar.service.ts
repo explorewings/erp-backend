@@ -1,6 +1,7 @@
 import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
+import { AccessService } from '../access/access.service';
 import {
   calendarEvents,
   calendarMeetingMembers,
@@ -63,9 +64,26 @@ export class CalendarService {
     private readonly policy: CalendarPolicy,
     private readonly log: CalendarLogService,
     private readonly notifier: CalendarNotifier,
+    private readonly access: AccessService,
   ) {}
 
   // ---------------------------------------------------------------- reads
+
+  /**
+   * Active users who can actually open the calendar. Assignee and member
+   * pickers use this so nobody is offered a person who cannot see the work.
+   */
+  async people() {
+    const rows = await this.db
+      .select({ id: users.id, username: users.username, email: users.email, role: users.role })
+      .from(users)
+      .where(eq(users.status, 'active'));
+
+    const allowed = await Promise.all(
+      rows.map(async (row) => (await this.access.hasMenuAccess(row.id, 'menu:calendar')) ? row : null),
+    );
+    return allowed.filter((row): row is NonNullable<typeof row> => row !== null);
+  }
 
   async list(viewer: Viewer, query: ListCalendarQueryDto) {
     const from = new Date(query.from);
@@ -413,7 +431,20 @@ export class CalendarService {
       viewer,
       row,
       next,
-      { action: logAction, fromStatus: toStatus ? row.status : null, toStatus, meta: { changed } },
+      {
+        action: logAction,
+        // Time-boxed types (meeting/announcement) store only scheduled|cancelled
+        // while the UI shows derived upcoming|live|ended, so log the derived
+        // value there or the history reads "scheduled → cancelled" for a live
+        // meeting. Tasks log their stored status (derivation would write "failed").
+        fromStatus: toStatus
+          ? (row.type === 'meeting' || row.type === 'announcement'
+            ? this.policy.effectiveStatus(row)
+            : row.status)
+          : null,
+        toStatus,
+        meta: { changed },
+      },
       memberIds,
       (tx) => this.notifier.edited(tx, viewer, row, next, added),
     );
@@ -505,10 +536,13 @@ export class CalendarService {
       .limit(1);
     if (!target || target.status !== 'active') bad('That person is not an active user.');
     if (!canAssignTask(viewer, target)) forbidden('You cannot assign tasks to that person.');
+    // Only people who can actually open the calendar should receive work in it.
+    if (!(await this.access.hasMenuAccess(target.id, 'menu:calendar'))) {
+      bad('That person does not have access to the calendar.');
+    }
   }
 
-  private async validMembers(memberIds: string[], creatorId: string): Promise<string[]> {
-    const ids = [...new Set(memberIds)].filter((id) => id !== creatorId);
+  private async validMembers(memberIds: string[], creatorId: string): Promise<string[]> {    const ids = [...new Set(memberIds)].filter((id) => id !== creatorId);
     if (!ids.length) return [];
     const rows = await this.db
       .select({ id: users.id, status: users.status })

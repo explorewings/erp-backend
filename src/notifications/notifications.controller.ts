@@ -1,13 +1,16 @@
 import { Body, Controller, Get, Patch, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
-import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { ListNotificationsQueryDto, MarkReadDto } from './dto/notifications.dto';
 import { NotificationsService } from './notifications.service';
 
-/** /rest/v1/notifications — always scoped to the signed-in user. */
+/**
+ * /notifications — always scoped to the signed-in user.
+ * Deliberately NOT gated by MenuAccess: notifications are a cross-cutting
+ * surface, so every signed-in user keeps their bell regardless of which
+ * menus they were granted.
+ */
 @Controller('notifications')
-@UseGuards(JwtGuard, MenuAccessGuard)
-@MenuAccess('menu:calendar')
+@UseGuards(JwtGuard)
 export class NotificationsController {
   constructor(private readonly notifications: NotificationsService) {}
 
