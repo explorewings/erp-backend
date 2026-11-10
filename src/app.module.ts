@@ -13,6 +13,7 @@ import { ClientImportsModule } from './client-imports/client-imports.module';
 import { CrmModule } from './crm/crm.module';
 import { CalendarModule } from './calendar/calendar.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { ReportsModule } from './reports/reports.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     CrmModule,
     CalendarModule,
     NotificationsModule,
+    ReportsModule,
   ],
   controllers: [AppController],
 })

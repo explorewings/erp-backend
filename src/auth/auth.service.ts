@@ -14,7 +14,7 @@ export interface AuthUser {
 export interface LoginResult {
   token: string;
   user: AuthUser;
-  deniedMenus: string[] | null;
+  grantedMenus: string[];
 }
 
 @Injectable()
@@ -47,20 +47,12 @@ export class AuthService {
 
     const token = await this.jwt.signAsync(payload);
 
-    let deniedMenus: string[] | null = null;
-    if (user.role !== 'superadmin' && user.role !== 'superuser') {
-      const rows = await this.access.list(user.id);
-      // No rows => default allow-all. Otherwise, deny only explicit false rows.
-      deniedMenus = rows.length === 0
-        ? null
-        : rows.filter((row) => !row.allowed).map((row) => row.code);
-    }
+    const grantedMenus = await this.access.getAllowedCodes(user.id);
 
     return {
       token,
       user: payload,
-      deniedMenus,
+      grantedMenus,
     };
   }
 }
-

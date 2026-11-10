@@ -1,13 +1,15 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { AccessController } from './access.controller';
 import { AccessService } from './access.service';
+import { MenuAccessGuard } from './menu-access.guard';
 
+@Global()
 @Module({
   controllers: [AccessController],
-  providers: [RolesGuard, AccessService],
+  providers: [RolesGuard, AccessService, MenuAccessGuard],
   imports: [
     JwtModule.registerAsync({
       inject: [ConfigService],
@@ -16,6 +18,6 @@ import { AccessService } from './access.service';
       }),
     }),
   ],
-  exports: [AccessService],
+  exports: [AccessService, MenuAccessGuard],
 })
 export class AccessModule {}

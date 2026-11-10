@@ -1,13 +1,15 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
+import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { PackagesService } from './packages.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { CreatePackageDto } from './dto/create-package.dto';
 import { UpdatePackageDto } from './dto/update-package.dto';
 
 @Controller('packages')
-@UseGuards(JwtGuard, RolesGuard)
+@UseGuards(JwtGuard, MenuAccessGuard, RolesGuard)
+@MenuAccess('menu:packages')
 export class PackagesController {
   constructor(private readonly packages: PackagesService) {}
 

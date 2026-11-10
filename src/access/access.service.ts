@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
-import { AccessItemRow, AccessRow, NewAccessRow, access, accessItems, users } from '../schema';
+import { AccessItemRow, AccessRow, NewAccessRow, access, accessItems } from '../schema';
 
 @Injectable()
 export class AccessService {
@@ -12,10 +12,24 @@ export class AccessService {
   }
 
   async getAllowedCodes(userId: string): Promise<string[]> {
-    const rows = await this.db.query.access.findMany({
-      where: (table, { and, eq }) => and(eq(table.userId, userId), eq(table.allowed, true)),
-    });
-    return rows.map((row) => row.code);
+    const [user, menuItems, rows] = await Promise.all([
+      this.db.query.users.findFirst({ where: (table, { eq }) => eq(table.id, userId) }),
+      this.db.query.accessItems.findMany({
+        where: (table, { and, eq }) => and(eq(table.type, 'menu'), eq(table.isActive, true)),
+      }),
+      this.db.query.access.findMany({
+        where: (table, { and, eq }) => and(eq(table.userId, userId), eq(table.allowed, true)),
+      }),
+    ]);
+    if (user?.role === 'superadmin' || user?.role === 'superuser') {
+      return menuItems.map((item) => item.code);
+    }
+    const activeCodes = new Set(
+      menuItems
+        .filter((item) => item.code !== 'menu:settings')
+        .map((item) => item.code),
+    );
+    return rows.filter((row) => activeCodes.has(row.code)).map((row) => row.code);
   }
 
   async replaceForUser(userId: string, codes: string[]): Promise<AccessRow[]> {
@@ -26,13 +40,15 @@ export class AccessService {
         .select({ code: accessItems.code })
         .from(accessItems)
         .where(and(eq(accessItems.type, 'menu'), eq(accessItems.isActive, true)));
-      if (menuItems.length === 0) return [];
-      const values: NewAccessRow[] = menuItems.map(({ code }) => ({
-        userId,
-        code,
-        type: 'menu',
-        allowed: selected.has(code),
-      }));
+      const values: NewAccessRow[] = menuItems
+        .filter(({ code }) => code !== 'menu:settings' && selected.has(code))
+        .map(({ code }) => ({
+          userId,
+          code,
+          type: 'menu',
+          allowed: true,
+        }));
+      if (values.length === 0) return [];
       return tx.insert(access).values(values).returning();
     });
   }
@@ -43,18 +59,23 @@ export class AccessService {
 
   async setMenuAccess(code: string, selectedUserIds: string[]): Promise<AccessRow[]> {
     const selected = new Set(selectedUserIds);
-    const rows = await this.db.query.users.findMany({});
-    const result: AccessRow[] = [];
-    for (const user of rows) {
-      await this.db
-        .insert(access)
-        .values({ userId: user.id, code, type: 'menu', allowed: selected.has(user.id) })
-        .onConflictDoUpdate({
-          target: [access.userId, access.code],
-          set: { allowed: selected.has(user.id) },
-        });
-    }
-    return this.db.query.access.findMany({ where: (table, { eq }) => eq(table.code, code) });
+    const users = await this.db.query.users.findMany({});
+    const grantIds = users
+      .filter((user) => user.role !== 'superadmin' && user.role !== 'superuser' && selected.has(user.id))
+      .map((user) => user.id);
+    await this.db.transaction(async (tx) => {
+      await tx.delete(access).where(eq(access.code, code));
+      if (grantIds.length > 0) {
+        await tx.insert(access).values(
+          grantIds.map((userId) => ({ userId, code, type: 'menu', allowed: true })),
+        );
+      }
+    });
+    return grantIds.length
+      ? this.db.query.access.findMany({
+          where: (table, { and, eq }) => and(eq(table.code, code), inArray(table.userId, grantIds)),
+        })
+      : [];
   }
 
   async getAccessItems(type?: string): Promise<AccessItemRow[]> {
@@ -68,5 +89,33 @@ export class AccessService {
   async isSuperuser(userId: string): Promise<boolean> {
     const user = await this.db.query.users.findFirst({ where: (u, { eq }) => eq(u.id, userId) });
     return user?.role === 'superadmin' || user?.role === 'superuser';
+  }
+
+  async getUserRole(userId: string): Promise<string | null> {
+    const user = await this.db.query.users.findFirst({ where: (table, { eq }) => eq(table.id, userId) });
+    return user?.role ?? null;
+  }
+
+  async hasMenuAccess(userId: string, code: string): Promise<boolean> {
+    const role = await this.getUserRole(userId);
+    if (role === 'superadmin' || role === 'superuser') return true;
+
+    const [menuItem, grant] = await Promise.all([
+      this.db.query.accessItems.findFirst({
+        where: (table, { and, eq }) => and(
+          eq(table.code, code),
+          eq(table.type, 'menu'),
+          eq(table.isActive, true),
+        ),
+      }),
+      this.db.query.access.findFirst({
+        where: (table, { and, eq }) => and(
+          eq(table.userId, userId),
+          eq(table.code, code),
+          eq(table.allowed, true),
+        ),
+      }),
+    ]);
+    return Boolean(menuItem && grant);
   }
 }

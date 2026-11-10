@@ -44,12 +44,13 @@ export class SettingsController {
   ) {}
 
   @Get('users')
+  @Roles('superadmin', 'superuser')
   async getUsers() {
     return this.users.findAll();
   }
 
   @Post('users/check-availability')
-  @Roles('superadmin')
+  @Roles('superadmin', 'superuser')
   async checkUserAvailability(@Body() dto: CheckUserAvailabilityDto) {
     const [username, email] = await Promise.all([
       this.users.findByUsername(dto.username.trim()),
@@ -64,7 +65,7 @@ export class SettingsController {
 
   @Post('users')
   @HttpCode(201)
-  @Roles('superadmin')
+  @Roles('superadmin', 'superuser')
   async createUser(@Body() dto: CreateUserDto): Promise<Omit<UserRow, 'passwordHash'>> {
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const values: NewUserRow = {
@@ -92,15 +93,16 @@ export class SettingsController {
             .from(accessItems)
             .where(and(eq(accessItems.type, 'menu'), eq(accessItems.isActive, true)));
 
-          if (menuItems.length > 0) {
-            await tx.insert(access).values(
-              menuItems.map(({ code }) => ({
-                userId: user.id,
-                code,
-                type: 'menu',
-                allowed: codes.has(code),
-              })),
-            );
+          const grants = menuItems
+            .filter(({ code }) => code !== 'menu:settings' && codes.has(code))
+            .map(({ code }) => ({
+              userId: user.id,
+              code,
+              type: 'menu',
+              allowed: true,
+            }));
+          if (grants.length > 0) {
+            await tx.insert(access).values(grants);
           }
         }
 
@@ -133,7 +135,7 @@ export class SettingsController {
   }
 
   @Patch('users/:id')
-  @Roles('superadmin')
+  @Roles('superadmin', 'superuser')
   async updateUser(
     @Param('id') id: string,
     @Body() dto: UpdateUserDto,
@@ -187,7 +189,7 @@ export class SettingsController {
 
 
   @Delete('users/:id')
-  @Roles('superadmin')
+  @Roles('superadmin', 'superuser')
   async deleteUser(@Param('id') id: string): Promise<{ deleted: string }> {
     const existing = await this.db.query.users.findFirst({ where: (u, { eq }) => eq(u.id, id) });
     if (!existing) throw new BadRequestException('User not found.');

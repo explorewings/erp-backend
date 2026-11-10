@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
 import { RenameCrmPipelineDto } from './dto/rename-pipeline.dto';
 import { RenameCrmStageDto } from './dto/rename-stage.dto';
@@ -23,7 +24,8 @@ import { CrmService } from './crm.service';
 type AuthedRequest = { user: CrmUser };
 
 @Controller('crm/pipelines')
-@UseGuards(JwtGuard, RolesGuard)
+@UseGuards(JwtGuard, MenuAccessGuard, RolesGuard)
+@MenuAccess('menu:crm')
 export class CrmController {
   constructor(private readonly crm: CrmService) {}
 

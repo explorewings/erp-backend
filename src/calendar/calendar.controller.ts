@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { CalendarService } from './calendar.service';
 import type { Viewer } from './calendar.policy';
 import { CreateCalendarEventDto } from './dto/create-calendar-event.dto';
@@ -9,7 +10,8 @@ import { UpdateCalendarEventDto } from './dto/update-calendar-event.dto';
 
 /** /rest/v1/calendar (plan §6). Every rule is enforced in CalendarService via CalendarPolicy. */
 @Controller('calendar')
-@UseGuards(JwtGuard, RolesGuard)
+@UseGuards(JwtGuard, MenuAccessGuard, RolesGuard)
+@MenuAccess('menu:calendar')
 export class CalendarController {
   constructor(private readonly calendar: CalendarService) {}
 

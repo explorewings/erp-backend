@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { CrmUser } from './crm-access';
 import { CrmDealsService } from './crm-deals.service';
 import { AddExistingCrmDealsDto } from './dto/add-existing-deals.dto';
@@ -11,7 +12,8 @@ type AuthedRequest = { user: CrmUser };
 
 /** Deal endpoints. All require access to the deal's pipeline. */
 @Controller('crm')
-@UseGuards(JwtGuard, RolesGuard)
+@UseGuards(JwtGuard, MenuAccessGuard, RolesGuard)
+@MenuAccess('menu:crm')
 export class CrmDealsController {
   constructor(private readonly deals: CrmDealsService) {}
 

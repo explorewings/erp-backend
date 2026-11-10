@@ -12,6 +12,7 @@ import {
 import { Request } from 'express';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
+import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { AppendClientImportBatchDto } from './dto/append-client-import-batch.dto';
 import { CreateClientImportDto } from './dto/create-client-import.dto';
 import { ClientImportsService } from './client-imports.service';
@@ -21,7 +22,8 @@ interface AuthenticatedRequest extends Request {
 }
 
 @Controller('client-imports')
-@UseGuards(JwtGuard, RolesGuard)
+@UseGuards(JwtGuard, MenuAccessGuard, RolesGuard)
+@MenuAccess('menu:clients')
 export class ClientImportsController {
   constructor(private readonly imports: ClientImportsService) {}
 

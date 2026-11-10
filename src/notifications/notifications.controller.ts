@@ -1,11 +1,13 @@
 import { Body, Controller, Get, Patch, Query, Request, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
+import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { ListNotificationsQueryDto, MarkReadDto } from './dto/notifications.dto';
 import { NotificationsService } from './notifications.service';
 
 /** /rest/v1/notifications — always scoped to the signed-in user. */
 @Controller('notifications')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, MenuAccessGuard)
+@MenuAccess('menu:calendar')
 export class NotificationsController {
   constructor(private readonly notifications: NotificationsService) {}
 

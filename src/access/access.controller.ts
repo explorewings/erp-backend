@@ -22,13 +22,14 @@ export class AccessController {
   constructor(private readonly access: AccessService) {}
 
   @Get('me')
-  async getMyAccess(@Req() req: any): Promise<{ codes: string[] | null }> {
-    const user = req.user as { id: string; role?: string } | undefined;
-    if (!user?.id) return { codes: null };
-    if (user.role === 'superadmin' || user.role === 'superuser') return { codes: null };
-    const rows = await this.access.list(user.id);
-    if (rows.length === 0) return { codes: null };
-    return { codes: rows.filter((row) => row.allowed).map((row) => row.code) };
+  async getMyAccess(@Req() req: any): Promise<{ grantedMenus: string[]; role: string | null }> {
+    const user = req.user as { id: string } | undefined;
+    if (!user?.id) return { grantedMenus: [], role: null };
+    const [grantedMenus, role] = await Promise.all([
+      this.access.getAllowedCodes(user.id),
+      this.access.getUserRole(user.id),
+    ]);
+    return { grantedMenus, role };
   }
 
   @Get('items')
@@ -37,26 +38,26 @@ export class AccessController {
   }
 
   @Get('menu/:code')
-  @Roles('superadmin')
+  @Roles('superadmin', 'superuser')
   async getMenuAccess(@Param('code') code: string) {
     return this.access.listByCode(code);
   }
 
   @Put('menu/:code')
-  @Roles('superadmin')
+  @Roles('superadmin', 'superuser')
   async setMenuAccess(@Param('code') code: string, @Body() dto: UpdateMenuAccessDto) {
     const ids = dto.userIds.filter((id) => /^[0-9a-f-]{36}$/i.test(id));
     return this.access.setMenuAccess(code, ids);
   }
 
   @Get(':userId')
-  @Roles('superadmin')
+  @Roles('superadmin', 'superuser')
   async getUserAccess(@Param('userId') userId: string) {
     return this.access.list(userId);
   }
 
   @Put(':userId')
-  @Roles('superadmin')
+  @Roles('superadmin', 'superuser')
   async setUserAccess(@Param('userId') userId: string, @Body() dto: UpdateAccessDto) {
     const codes = dto.codes.filter((code) => /^[a-z0-9:_-]+$/i.test(code));
     return this.access.replaceForUser(userId, codes);

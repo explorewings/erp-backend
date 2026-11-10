@@ -9,3 +9,4 @@ export * from './packages';
 export * from './resorts';
 export * from './users';
 export * from './notifications';
+export * from './reports';

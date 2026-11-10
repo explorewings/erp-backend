@@ -1,13 +1,15 @@
 import { BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
+import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { CreateClientDto } from './dto/create-client.dto';
 import { ClientsService } from './clients.service';
 
 type AuthedRequest = { user: { id: string } };
 
 @Controller('clients')
-@UseGuards(JwtGuard, RolesGuard)
+@UseGuards(JwtGuard, MenuAccessGuard, RolesGuard)
+@MenuAccess('menu:clients')
 export class ClientsController {
   constructor(private readonly clients: ClientsService) {}
 

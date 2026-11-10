@@ -103,6 +103,20 @@ export class StorageService {
     return url;
   }
 
+  async signDownloadUrl(key: string, fileName: string): Promise<string> {
+    const safeName = fileName.replace(/["\\\r\n]/g, '_');
+    return getSignedUrl(
+      this.client,
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ResponseContentDisposition: `attachment; filename="${safeName}"`,
+        ResponseContentType: 'application/octet-stream',
+      }),
+      { expiresIn: this.presignTtlSeconds },
+    );
+  }
+
   /** Batch helper: preserves input order, deduplicates identical keys. */
   async signMany(keys: Array<string | null>): Promise<Array<string | null>> {
     const unique = [...new Set(keys.filter((k): k is string => Boolean(k)))];
