@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { AccessService } from '../access/access.service';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { ReportRow, reports, users } from '../schema';
@@ -81,9 +81,10 @@ export class ReportsService {
     }
   }
 
-  async list(user: ReportsUser, page = 1, pageSize = 100) {
+  async list(user: ReportsUser, page = 1, pageSize = 100, reportDate?: string) {
     await this.assertCanUseReports(user);
-    const where = isElevated(user) ? undefined : eq(reports.createdBy, user.id);
+    const scope = isElevated(user) ? undefined : eq(reports.createdBy, user.id);
+    const where = reportDate ? (scope ? and(scope, eq(reports.reportDate, reportDate)) : eq(reports.reportDate, reportDate)) : scope;
     const countRows = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(reports)
@@ -103,6 +104,7 @@ export class ReportsService {
       page,
       pageSize,
       totalPages: Math.ceil(total / pageSize),
+      date: reportDate ?? null,
     };
   }
 

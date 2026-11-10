@@ -38,6 +38,7 @@ export class ReportsController {
     @Req() req: AuthedRequest,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('date') date?: string,
   ) {
     const parsedPage = page === undefined ? 1 : Number(page);
     const parsedLimit = limit === undefined ? 100 : Number(limit);
@@ -47,7 +48,10 @@ export class ReportsController {
     if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
       throw new BadRequestException('Limit must be between 1 and 100.');
     }
-    return this.reports.list(req.user, parsedPage, parsedLimit);
+    if (date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new BadRequestException('Date must use the YYYY-MM-DD format.');
+    }
+    return this.reports.list(req.user, parsedPage, parsedLimit, date);
   }
 
   @Post()

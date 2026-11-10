@@ -312,6 +312,83 @@ export class CrmService {
 
   // ---------------------------------------------------------------- stages
 
+  async createStage(pipelineId: number, rawName: string, user: CrmUser) {
+    const name = rawName.trim();
+    if (!name) throw new BadRequestException('Stage name is required.');
+
+    await this.getVisiblePipeline(pipelineId, user);
+    const duplicateMessage = `A stage named "${name}" already exists in this pipeline.`;
+
+    try {
+      return await this.db.transaction(async (tx) => {
+        const stages = await tx
+          .select()
+          .from(crmPipelineStages)
+          .where(eq(crmPipelineStages.pipelineId, pipelineId))
+          .for('update');
+
+        if (stages.some((row) => nameKey(row.name) === nameKey(name))) {
+          throw new ConflictException(duplicateMessage);
+        }
+
+        const [created] = await tx
+          .insert(crmPipelineStages)
+          .values({
+            pipelineId,
+            name,
+            position: stages.length,
+          })
+          .returning();
+        if (!created) throw new InternalServerErrorException('Unable to create stage.');
+        return toStageResponse(created);
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new ConflictException(duplicateMessage);
+      throw error;
+    }
+  }
+
+  async deleteStage(pipelineId: number, stageId: number, user: CrmUser) {
+    await this.getVisiblePipeline(pipelineId, user);
+
+    return this.db.transaction(async (tx) => {
+      const stages = await tx
+        .select()
+        .from(crmPipelineStages)
+        .where(eq(crmPipelineStages.pipelineId, pipelineId))
+        .for('update');
+
+      const stage = stages.find((row) => row.id === stageId);
+      if (!stage) throw new NotFoundException('Stage not found in this pipeline.');
+      if (stages.length <= 1) {
+        throw new BadRequestException('A pipeline must keep at least one stage.');
+      }
+
+      const [{ count }] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(crmDeals)
+        .where(and(eq(crmDeals.pipelineId, pipelineId), eq(crmDeals.stageId, stageId)));
+      if ((count ?? 0) > 0) {
+        throw new ConflictException('This stage still has deals. Move or delete those deals first.');
+      }
+
+      const remaining = stages
+        .filter((row) => row.id !== stageId)
+        .sort((a, b) => a.position - b.position || a.id - b.id);
+
+      const now = new Date();
+      for (const [index, row] of remaining.entries()) {
+        await tx
+          .update(crmPipelineStages)
+          .set({ position: index, updatedAt: now })
+          .where(eq(crmPipelineStages.id, row.id));
+      }
+
+      await tx.delete(crmPipelineStages).where(eq(crmPipelineStages.id, stageId));
+      return { id: stageId, deleted: true };
+    });
+  }
+
   async renameStage(pipelineId: number, stageId: number, rawName: string, user: CrmUser) {
     const name = rawName.trim();
     if (!name) throw new BadRequestException('Stage name is required.');

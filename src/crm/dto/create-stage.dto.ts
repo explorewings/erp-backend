@@ -1,0 +1,7 @@
+import { IsString, MaxLength } from 'class-validator';
+
+export class CreateCrmStageDto {
+  @IsString()
+  @MaxLength(100)
+  name!: string;
+}

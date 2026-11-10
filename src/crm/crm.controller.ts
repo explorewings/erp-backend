@@ -15,6 +15,7 @@ import { JwtGuard } from '../auth/guards/jwt.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
+import { CreateCrmStageDto } from './dto/create-stage.dto';
 import { RenameCrmPipelineDto } from './dto/rename-pipeline.dto';
 import { RenameCrmStageDto } from './dto/rename-stage.dto';
 import { ReorderCrmStagesDto } from './dto/reorder-stages.dto';
@@ -61,6 +62,16 @@ export class CrmController {
     return this.crm.deletePipeline(pipelineId, req.user);
   }
 
+  /** Create a new stage inside this pipeline. */
+  @Post(':pipelineId/stages')
+  createStage(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Body() dto: CreateCrmStageDto,
+  ) {
+    return this.crm.createStage(pipelineId, dto.name, req.user);
+  }
+
   /** Replace the stage order. Body: every stage ID of the pipeline, in order. */
   @Put(':pipelineId/stages/order')
   reorderStages(
@@ -69,6 +80,16 @@ export class CrmController {
     @Body() dto: ReorderCrmStagesDto,
   ) {
     return this.crm.reorderStages(pipelineId, dto.stageIds, req.user);
+  }
+
+  /** Delete one stage from the pipeline. */
+  @Delete(':pipelineId/stages/:stageId')
+  deleteStage(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Param('stageId', ParseIntPipe) stageId: number,
+  ) {
+    return this.crm.deleteStage(pipelineId, stageId, req.user);
   }
 
   /** Rename one stage of the pipeline. */
