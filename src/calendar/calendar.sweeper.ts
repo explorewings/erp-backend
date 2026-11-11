@@ -8,6 +8,11 @@ import { CalendarNotifier } from './calendar.notifier';
 import { FAILABLE_TASK_STATUSES } from './constants/statuses';
 
 const INTERVAL_MS = 5 * 60_000;
+// Absolute floor for `meeting_ended`: only meetings that ended within this window
+// are ever announced. It exists purely so a fresh install against an old database
+// does not fire one notice per historical meeting; normal operation is governed by
+// the per-event de-duplication check instead.
+const ENDED_MAX_AGE_MS = 24 * 60 * 60_000;
 const LOCK_KEY = 814506244; // one sweeper across all running API instances
 
 /**
@@ -52,9 +57,10 @@ export class CalendarSweeper implements OnModuleInit, OnModuleDestroy {
         const lifted = await this.liftExpiredHolds(now);
         const failed = await this.failOverdue(now);
         const live = await this.announceLiveMeetings(now);
-        if (lifted || failed || live) {
+        const ended = await this.announceEndedMeetings(now);
+        if (lifted || failed || live || ended) {
           this.logger.log(
-            `Calendar sweep: ${lifted} holds lifted, ${failed} tasks failed, ${live} meetings went live.`,
+            `Calendar sweep: ${lifted} holds lifted, ${failed} tasks failed, ${live} meetings went live, ${ended} ended.`,
           );
         }
       } finally {
@@ -138,6 +144,55 @@ export class CalendarSweeper implements OnModuleInit, OnModuleDestroy {
         .where(eq(calendarMeetingMembers.eventId, row.id));
       await this.db.transaction(async (tx) => {
         await this.notifier.meetingLive(tx, row, members.map((m) => m.userId));
+      });
+      sent += 1;
+    }
+    return sent;
+  }
+
+  /**
+   * Meetings whose `ends_at` has passed and that have not been announced yet:
+   * announce each one once. Delivery is driven by the de-duplication check, not
+   * by a short time window, so a restart or outage at the end time does not make
+   * the notification vanish. `ENDED_MAX_AGE_MS` is only a floor for ancient rows.
+   */
+  private async announceEndedMeetings(now: Date) {
+    const e = calendarEvents;
+    const floor = new Date(now.getTime() - ENDED_MAX_AGE_MS);
+    const ended = await this.db
+      .select({ id: e.id, type: e.type, title: e.title, visibility: e.visibility, createdBy: e.createdBy })
+      .from(e)
+      .where(
+        and(
+          eq(e.type, 'meeting'),
+          eq(e.status, 'scheduled'),
+          gt(e.endsAt, floor),
+          lte(e.endsAt, now),
+          isNull(e.deletedAt),
+        ),
+      );
+    if (!ended.length) return 0;
+
+    const already = await this.db
+      .select({ entityId: notifications.entityId })
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.kind, 'meeting_ended'),
+          inArray(notifications.entityId, ended.map((row) => String(row.id))),
+        ),
+      );
+    const announced = new Set(already.map((row) => row.entityId));
+
+    let sent = 0;
+    for (const row of ended) {
+      if (announced.has(String(row.id))) continue;
+      const members = await this.db
+        .select({ userId: calendarMeetingMembers.userId })
+        .from(calendarMeetingMembers)
+        .where(eq(calendarMeetingMembers.eventId, row.id));
+      await this.db.transaction(async (tx) => {
+        await this.notifier.meetingEnded(tx, row, members.map((m) => m.userId));
       });
       sent += 1;
     }

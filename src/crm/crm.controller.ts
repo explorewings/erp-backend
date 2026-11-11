@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  ParseUUIDPipe,
   Patch,
   Post,
   Put,
@@ -12,8 +13,9 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
+import { AddCrmPipelineUserDto } from './dto/add-pipeline-user.dto';
 import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
 import { CreateCrmStageDto } from './dto/create-stage.dto';
 import { RenameCrmPipelineDto } from './dto/rename-pipeline.dto';
@@ -59,6 +61,37 @@ export class CrmController {
     @Body() dto: UpdateCrmDealAssignmentDto,
   ) {
     return this.crm.updateDealAssignmentMethod(pipelineId, dto.method, req.user);
+  }
+
+  /** The pipeline's access list with user identity. Any viewer may read it. */
+  @Get(':pipelineId/users')
+  listPipelineUsers(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+  ) {
+    return this.crm.listPipelineUsers(pipelineId, req.user);
+  }
+
+  /** Grant a user access to the pipeline. Superadmin/superuser for now. */
+  @Roles('superadmin', 'superuser')
+  @Post(':pipelineId/users')
+  addPipelineUser(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Body() dto: AddCrmPipelineUserDto,
+  ) {
+    return this.crm.addPipelineUser(pipelineId, dto.userId, req.user);
+  }
+
+  /** Remove a user's pipeline access. Superadmin/superuser for now. */
+  @Roles('superadmin', 'superuser')
+  @Delete(':pipelineId/users/:userId')
+  removePipelineUser(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Param('userId', ParseUUIDPipe) userId: string,
+  ) {
+    return this.crm.removePipelineUser(pipelineId, userId, req.user);
   }
 
   /** Deal and stage counts for the delete confirmation. */

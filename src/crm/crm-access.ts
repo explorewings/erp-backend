@@ -31,3 +31,11 @@ export function canManagePipeline(
   if (isSuperRole(user.role) || pipeline.createdBy === user.id) return true;
   return user.role === 'admin' && hasGrant;
 }
+
+/**
+ * Who may add or remove users from a pipeline's access list.
+ * Super roles for now; a dedicated permission item will govern this later.
+ */
+export function canManagePipelineUsers(user: CrmUser): boolean {
+  return isSuperRole(user.role);
+}

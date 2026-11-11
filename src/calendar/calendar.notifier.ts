@@ -123,6 +123,26 @@ export class CalendarNotifier {
     );
   }
 
+  /**
+   * A meeting has just finished. Fired once per meeting by the sweeper when
+   * `ends_at` has passed. Same audience as `meetingLive`.
+   */
+  async meetingEnded(
+    tx: Writer,
+    row: { id: number; type: string; title: string; visibility: string | null; createdBy: string },
+    memberIds: string[],
+  ) {
+    await this.notifications.notify(
+      {
+        ...this.base(row, null, 'meeting_ended'),
+        recipients: row.visibility === 'open' ? await this.notifications.activeUserIds() : [...memberIds, row.createdBy],
+        title: 'Meeting ended',
+        body: `${q(row.title)} has ended.`,
+      },
+      tx,
+    );
+  }
+
   /** A workflow step on a task, or cancelling a meeting. */
   async step(tx: Writer, viewer: Viewer, row: CalendarEventRow, action: string, reason: string | null, memberIds: string[] = []) {
     if (row.type === 'meeting' && action === 'cancel_event') {

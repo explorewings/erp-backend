@@ -18,7 +18,13 @@ import {
   crmPipelineUsers,
   users,
 } from '../schema';
-import { canManagePipeline, canViewPipeline, CrmUser, isSuperRole } from './crm-access';
+import {
+  canManagePipeline,
+  canManagePipelineUsers,
+  canViewPipeline,
+  CrmUser,
+  isSuperRole,
+} from './crm-access';
 import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
 import { isUniqueViolation } from './db-errors';
 import type { CrmDealAssignmentMethod } from './crm-assignment';
@@ -266,6 +272,89 @@ export class CrmService {
       });
     if (!updated) throw new NotFoundException('Pipeline not found.');
     return updated;
+  }
+
+  // --------------------------------------------------------- pipeline users
+
+  /** The pipeline's access rows joined with user identity, for the Assign users drawer. */
+  async listPipelineUsers(pipelineId: number, user: CrmUser) {
+    const { pipeline } = await this.getVisiblePipeline(pipelineId, user);
+    return this.db
+      .select({
+        id: users.id,
+        username: users.username,
+        role: users.role,
+        status: users.status,
+      })
+      .from(crmPipelineUsers)
+      .innerJoin(users, eq(users.id, crmPipelineUsers.userId))
+      .where(eq(crmPipelineUsers.pipelineId, pipeline.id))
+      .orderBy(asc(users.username));
+  }
+
+  async addPipelineUser(pipelineId: number, userId: string, user: CrmUser) {
+    if (!canManagePipelineUsers(user)) {
+      throw new ForbiddenException('Only a superadmin can change pipeline access.');
+    }
+    const { pipeline } = await this.getVisiblePipeline(pipelineId, user);
+
+    const [target] = await this.db
+      .select({
+        id: users.id,
+        username: users.username,
+        role: users.role,
+        status: users.status,
+      })
+      .from(users)
+      .where(and(eq(users.id, userId), ne(users.status, 'inactive')))
+      .limit(1);
+    if (!target) throw new BadRequestException('User does not exist or is inactive.');
+
+    await this.db
+      .insert(crmPipelineUsers)
+      .values({ pipelineId: pipeline.id, userId: target.id })
+      .onConflictDoNothing();
+    return target;
+  }
+
+  async removePipelineUser(pipelineId: number, userId: string, user: CrmUser) {
+    if (!canManagePipelineUsers(user)) {
+      throw new ForbiddenException('Only a superadmin can change pipeline access.');
+    }
+    const { pipeline } = await this.getVisiblePipeline(pipelineId, user);
+    if (pipeline.createdBy === userId) {
+      throw new BadRequestException('The pipeline creator keeps access.');
+    }
+
+    // Locking the pipeline row serializes this with deal assignment, which
+    // locks the same row before inserting an owner, so the owned-deal check
+    // below cannot race with a new assignment.
+    return this.db.transaction(async (tx) => {
+      await tx
+        .select({ id: crmPipelines.id })
+        .from(crmPipelines)
+        .where(eq(crmPipelines.id, pipeline.id))
+        .for('update');
+
+      const [owned] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(crmDeals)
+        .where(and(eq(crmDeals.pipelineId, pipeline.id), eq(crmDeals.assignedUserId, userId)));
+      if ((owned?.count ?? 0) > 0) {
+        throw new ConflictException(
+          `This user owns ${owned.count} deal${owned.count === 1 ? '' : 's'} in this pipeline. Reassign or unassign those deals first.`,
+        );
+      }
+
+      const removed = await tx
+        .delete(crmPipelineUsers)
+        .where(and(eq(crmPipelineUsers.pipelineId, pipeline.id), eq(crmPipelineUsers.userId, userId)))
+        .returning({ userId: crmPipelineUsers.userId });
+      if (removed.length === 0) {
+        throw new NotFoundException('User does not have access to this pipeline.');
+      }
+      return { userId, deleted: true };
+    });
   }
 
   async updateDealAssignmentMethod(
