@@ -21,6 +21,7 @@ import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportDto } from './dto/update-report.dto';
 import { UpdateReportRemarksDto } from './dto/update-report-remarks.dto';
+import { UpdateReportSettingsDto } from './dto/update-report-settings.dto';
 import { ReportsService } from './reports.service';
 
 type AuthedRequest = { user: { id: string; role?: string } };
@@ -57,6 +58,25 @@ export class ReportsController {
       throw new BadRequestException('Invalid user id.');
     }
     return this.reports.list(req.user, parsedPage, parsedLimit, date, userId);
+  }
+
+  // Declared before ':id' so "settings" is never parsed as a report id.
+  @Get('settings')
+  @Roles('superadmin', 'superuser')
+  getSettings(@Req() req: AuthedRequest) {
+    return this.reports.getSettings(req.user);
+  }
+
+  @Patch('settings')
+  @Roles('superadmin', 'superuser')
+  updateSettings(@Req() req: AuthedRequest, @Body() dto: UpdateReportSettingsDto) {
+    return this.reports.updateSettings(dto, req.user);
+  }
+
+  @Get(':id')
+  @Roles(...reportRoles)
+  findOne(@Req() req: AuthedRequest, @Param('id', ParseIntPipe) id: number) {
+    return this.reports.findOne(id, req.user);
   }
 
   @Post()

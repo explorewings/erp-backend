@@ -3,16 +3,19 @@ import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { AccessModule } from '../access/access.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { StorageModule } from '../storage/storage.module';
 import { ReportsController } from './reports.controller';
+import { ReportsReminder } from './reports.reminder';
 import { ReportsService } from './reports.service';
 
 @Module({
   controllers: [ReportsController],
-  providers: [RolesGuard, ReportsService],
+  providers: [RolesGuard, ReportsService, ReportsReminder],
   imports: [
     StorageModule,
     AccessModule,
+    NotificationsModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({

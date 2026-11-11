@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { check, date, index, integer, jsonb, pgTable, serial, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { check, date, index, integer, jsonb, pgTable, serial, smallint, text, time, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { users } from './users';
 
 export const reports = pgTable(
@@ -11,6 +11,8 @@ export const reports = pgTable(
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Set when the report's content changes after submission (shown as "Edited"). Remarks don't count. */
+    editedAt: timestamp('edited_at', { withTimezone: true }),
     attachmentType: text('attachment_type'),
     attachmentUrl: text('attachment_url'),
     attachmentKey: text('attachment_key'),
@@ -49,3 +51,16 @@ export const reports = pgTable(
 );
 
 export type ReportRow = typeof reports.$inferSelect;
+
+/** Single-row (id = 1) module settings for Reports. */
+export const reportSettings = pgTable('report_settings', {
+  id: smallint('id').primaryKey().default(1),
+  /** `HH:MM:SS` in the Reports timezone (default 21:00); null turns the missing-report reminder off. */
+  dueTime: time('due_time').default('21:00'),
+  /** Weekdays with no reminder: 0 = Sunday … 6 = Saturday. */
+  skipDays: smallint('skip_days').array().notNull().default([]),
+  updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type ReportSettingsRow = typeof reportSettings.$inferSelect;

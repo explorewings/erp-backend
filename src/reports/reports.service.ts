@@ -3,10 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { AccessService } from '../access/access.service';
 import { DRIZZLE, DrizzleDb } from '../database.module';
-import { ReportRow, reports, users } from '../schema';
+import { NotificationsService } from '../notifications/notifications.service';
+import { ReportRow, reportSettings, reports, users } from '../schema';
 import { StorageService } from '../storage/storage.service';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportDto } from './dto/update-report.dto';
+import { UpdateReportSettingsDto } from './dto/update-report-settings.dto';
+import { REPORTS_TIMEZONE, formatReportDate } from './report-time';
 
 type ReportsUser = { id: string; role?: string };
 type UploadedReportFile = { buffer: Buffer; originalname: string; mimetype: string; size: number };
@@ -69,6 +72,7 @@ export class ReportsService {
     @Inject(DRIZZLE) private readonly db: DrizzleDb,
     private readonly storage: StorageService,
     private readonly access: AccessService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private async assertCanUseReports(user: ReportsUser): Promise<void> {
@@ -114,6 +118,22 @@ export class ReportsService {
       date: reportDate ?? null,
       userId: createdById ?? null,
     };
+  }
+
+  /** One report, under the same visibility rules as the list (used by notification links). */
+  async findOne(id: number, user: ReportsUser) {
+    await this.assertCanUseReports(user);
+    const [row] = await this.db
+      .select({ report: reports, createdByUsername: users.username })
+      .from(reports)
+      .leftJoin(users, eq(users.id, reports.createdBy))
+      .where(eq(reports.id, id))
+      .limit(1);
+    // Someone else's report is reported as missing, not forbidden, so ids can't be probed.
+    if (!row || (!isElevated(user) && row.report.createdBy !== user.id)) {
+      throw new NotFoundException(`Report ${id} not found.`);
+    }
+    return this.toResponse(row.report, row.createdByUsername);
   }
 
   async create(dto: CreateReportDto, file: UploadedReportFile | undefined, user: ReportsUser) {
@@ -174,6 +194,13 @@ export class ReportsService {
             }
           : await this.buildAttachment(dto.attachmentMode, dto.attachmentUrl, file);
         uploadedKey = attachment.attachmentKey !== existing.attachmentKey ? attachment.attachmentKey : null;
+        // Only a real content change earns the "Edited" tag; saving unchanged content keeps it as it was.
+        const contentChanged =
+          dto.reportDate !== existing.reportDate
+          || JSON.stringify(reportItems) !== JSON.stringify(existing.reportItems)
+          || attachment.attachmentType !== existing.attachmentType
+          || attachment.attachmentUrl !== existing.attachmentUrl
+          || attachment.attachmentKey !== existing.attachmentKey;
 
         const [row] = await tx
           .update(reports)
@@ -181,6 +208,7 @@ export class ReportsService {
             reportDate: dto.reportDate,
             reportItems,
             updatedAt: new Date(),
+            editedAt: contentChanged ? new Date() : existing.editedAt,
             ...attachment,
           })
           .where(eq(reports.id, id))
@@ -211,16 +239,76 @@ export class ReportsService {
   async updateRemarks(id: number, remarks: string | null | undefined, user: ReportsUser) {
     await this.assertCanUseReports(user);
     if (!isElevated(user)) throw new ForbiddenException('Only superadmin or superuser can add remarks.');
-    const [updated] = await this.db
-      .update(reports)
-      .set({ remarks: remarks?.trim() || null, updatedAt: new Date() })
-      .where(eq(reports.id, id))
-      .returning();
-    if (!updated) throw new NotFoundException(`Report ${id} not found.`);
+    const next = remarks?.trim() || null;
+    const updated = await this.db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(reports).where(eq(reports.id, id)).for('update');
+      if (!existing) throw new NotFoundException(`Report ${id} not found.`);
+      const [row] = await tx
+        .update(reports)
+        .set({ remarks: next, updatedAt: new Date() })
+        .where(eq(reports.id, id))
+        .returning();
+      if (!row) throw new NotFoundException(`Report ${id} not found.`);
+      // Tell the submitter when remarks are added or changed (not when cleared).
+      // notify() skips the actor, so remarking your own report sends nothing.
+      if (next && next !== existing.remarks) {
+        await this.notifications.notify(
+          {
+            recipients: [row.createdBy],
+            actorId: user.id,
+            module: 'reports',
+            kind: existing.remarks ? 'report_remarks_updated' : 'report_remarks_added',
+            entityType: 'report',
+            entityId: row.id,
+            title: existing.remarks
+              ? `Remarks updated on your report for ${formatReportDate(row.reportDate)}`
+              : `New remarks on your report for ${formatReportDate(row.reportDate)}`,
+            body: next.length > 160 ? `${next.slice(0, 157)}...` : next,
+            link: `/erp/reports?report=${row.id}`,
+          },
+          tx,
+        );
+      }
+      return row;
+    });
     const [creator] = updated.createdBy
       ? await this.db.select({ username: users.username }).from(users).where(eq(users.id, updated.createdBy)).limit(1)
       : [];
     return this.toResponse(updated, creator?.username ?? null);
+  }
+
+  async getSettings(user: ReportsUser) {
+    await this.assertCanUseReports(user);
+    if (!isElevated(user)) throw new ForbiddenException('Only superadmin or superuser can view Reports settings.');
+    const [row] = await this.db.select().from(reportSettings).where(eq(reportSettings.id, 1)).limit(1);
+    return this.toSettingsResponse(row?.dueTime ?? null, row?.skipDays ?? [], row?.updatedAt ?? null);
+  }
+
+  async updateSettings(dto: UpdateReportSettingsDto, user: ReportsUser) {
+    await this.assertCanUseReports(user);
+    if (!isElevated(user)) throw new ForbiddenException('Only superadmin or superuser can change Reports settings.');
+    const values = {
+      dueTime: dto.dueTime,
+      skipDays: [...dto.skipDays].sort((a, b) => a - b),
+      updatedBy: user.id,
+      updatedAt: new Date(),
+    };
+    const [row] = await this.db
+      .insert(reportSettings)
+      .values({ id: 1, ...values })
+      .onConflictDoUpdate({ target: reportSettings.id, set: values })
+      .returning();
+    return this.toSettingsResponse(row.dueTime, row.skipDays, row.updatedAt);
+  }
+
+  private toSettingsResponse(dueTime: string | null, skipDays: number[], updatedAt: Date | null) {
+    return {
+      // Postgres TIME comes back as HH:MM:SS; the API speaks HH:MM.
+      dueTime: dueTime ? dueTime.slice(0, 5) : null,
+      skipDays,
+      timezone: REPORTS_TIMEZONE,
+      updatedAt,
+    };
   }
 
   async remove(id: number, user: ReportsUser) {
@@ -333,6 +421,7 @@ export class ReportsService {
       createdByUsername,
       submittedAt: report.submittedAt,
       updatedAt: report.updatedAt,
+      editedAt: report.editedAt,
       attachment,
       remarks: report.remarks,
     };
