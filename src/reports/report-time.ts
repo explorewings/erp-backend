@@ -48,6 +48,14 @@ export function formatDueTime(value: string): string {
   return `${hours % 12 || 12}:${String(minutes).padStart(2, '0')} ${suffix}`;
 }
 
+/** Weekday of a plain `YYYY-MM-DD` date: 0 = Sunday … 6 = Saturday. */
+export function weekdayOf(value: string): number {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+export const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
 /** `2026-11-12` → `12 Nov 2026` (no timezone shift: it is a plain date). */
 export function formatReportDate(value: string): string {
   const [year, month, day] = value.split('-').map(Number);

@@ -14,7 +14,7 @@ const KIND = 'report_missing';
  * Every 5 minutes: once today's due time (Reports timezone) has passed, remind
  * each staff/admin with Reports access who has not submitted a report for today.
  *
- * - No due time set, or today is a skipped weekday → nothing is sent.
+ * - No due time set, or today is an off day (settings.skip_days) → nothing is sent.
  * - Each person gets at most one reminder per date: an existing `report_missing`
  *   notification for that user and date blocks a repeat, so restarts and
  *   multiple instances are safe, and a reminder missed during downtime is still

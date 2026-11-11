@@ -62,7 +62,7 @@ export class ReportsController {
 
   // Declared before ':id' so "settings" is never parsed as a report id.
   @Get('settings')
-  @Roles('superadmin', 'superuser')
+  @Roles(...reportRoles)
   getSettings(@Req() req: AuthedRequest) {
     return this.reports.getSettings(req.user);
   }

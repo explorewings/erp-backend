@@ -9,7 +9,7 @@ import { StorageService } from '../storage/storage.service';
 import { CreateReportDto } from './dto/create-report.dto';
 import { UpdateReportDto } from './dto/update-report.dto';
 import { UpdateReportSettingsDto } from './dto/update-report-settings.dto';
-import { REPORTS_TIMEZONE, formatReportDate } from './report-time';
+import { REPORTS_TIMEZONE, WEEKDAY_NAMES, formatReportDate, weekdayOf } from './report-time';
 
 type ReportsUser = { id: string; role?: string };
 type UploadedReportFile = { buffer: Buffer; originalname: string; mimetype: string; size: number };
@@ -139,6 +139,7 @@ export class ReportsService {
   async create(dto: CreateReportDto, file: UploadedReportFile | undefined, user: ReportsUser) {
     await this.assertCanUseReports(user);
     const reportItems = normalizeReportItems(dto.reports);
+    await this.assertNotOffDay(dto.reportDate);
     await this.assertNoExistingReportForDate(user, dto.reportDate);
     const attachment = await this.buildAttachment(dto.attachmentMode, dto.attachmentUrl, file);
     let created: ReportRow;
@@ -175,7 +176,9 @@ export class ReportsService {
         const [existing] = await tx.select().from(reports).where(eq(reports.id, id)).for('update');
         if (!existing) throw new NotFoundException(`Report ${id} not found.`);
         this.assertCanEdit(existing, user);
+        // Only a date change is checked: a report already dated on an off day stays editable.
         if (dto.reportDate !== existing.reportDate) {
+          await this.assertNotOffDay(dto.reportDate);
           await this.assertNoExistingReportForDate(user, dto.reportDate);
         }
         if (dto.attachmentMode === 'keep' && (file || dto.attachmentUrl)) {
@@ -278,8 +281,8 @@ export class ReportsService {
   }
 
   async getSettings(user: ReportsUser) {
+    // Readable by every Reports user: the form needs the off days. Only changes are restricted.
     await this.assertCanUseReports(user);
-    if (!isElevated(user)) throw new ForbiddenException('Only superadmin or superuser can view Reports settings.');
     const [row] = await this.db.select().from(reportSettings).where(eq(reportSettings.id, 1)).limit(1);
     return this.toSettingsResponse(row?.dueTime ?? null, row?.skipDays ?? [], row?.updatedAt ?? null);
   }
@@ -325,6 +328,23 @@ export class ReportsService {
       }
     }
     return { id };
+  }
+
+  /**
+   * Off days (settings.skip_days) do both jobs: no reminder is sent on them, and
+   * no report can be dated on them. Checked by the report's date, not the day
+   * it is submitted.
+   */
+  private async assertNotOffDay(reportDate: string): Promise<void> {
+    const [settings] = await this.db
+      .select({ skipDays: reportSettings.skipDays })
+      .from(reportSettings)
+      .where(eq(reportSettings.id, 1))
+      .limit(1);
+    const weekday = weekdayOf(reportDate.slice(0, 10));
+    if (settings?.skipDays.includes(weekday)) {
+      throw new BadRequestException(`${WEEKDAY_NAMES[weekday]} is an off day. Reports can't be dated on it.`);
+    }
   }
 
   /** Blocks a second report for the same person and same day. */
