@@ -18,6 +18,7 @@ import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { AddCrmPipelineUserDto } from './dto/add-pipeline-user.dto';
 import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
 import { CreateCrmStageDto } from './dto/create-stage.dto';
+import { PreviewCrmPipelineUsersDto, SaveCrmPipelineUsersDto } from './dto/save-pipeline-users.dto';
 import { RenameCrmPipelineDto } from './dto/rename-pipeline.dto';
 import { RenameCrmStageDto } from './dto/rename-stage.dto';
 import { ReorderCrmStagesDto } from './dto/reorder-stages.dto';
@@ -70,6 +71,28 @@ export class CrmController {
     @Body() dto: AddCrmPipelineUserDto,
   ) {
     return this.crm.addPipelineUser(pipelineId, dto.userId, req.user);
+  }
+
+  /** What saving this member list would change (removed users' deal counts). */
+  @Roles('superadmin', 'superuser')
+  @Post(':pipelineId/users/preview')
+  previewPipelineUsers(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Body() dto: PreviewCrmPipelineUsersDto,
+  ) {
+    return this.crm.previewPipelineUsers(pipelineId, dto.userIds, req.user);
+  }
+
+  /** Replace the pipeline's member list; removed users' deals become unassigned. */
+  @Roles('superadmin', 'superuser')
+  @Put(':pipelineId/users')
+  savePipelineUsers(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Body() dto: SaveCrmPipelineUsersDto,
+  ) {
+    return this.crm.savePipelineUsers(pipelineId, dto.userIds, dto.confirmUnassign === true, req.user);
   }
 
   /** Remove a user's pipeline access. Superadmin/superuser for now. */

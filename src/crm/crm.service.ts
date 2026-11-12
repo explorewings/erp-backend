@@ -27,6 +27,7 @@ import {
 } from './crm-access';
 import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
 import { isUniqueViolation } from './db-errors';
+import type { CrmTx } from './crm-assignment.service';
 
 function toStageResponse(stage: CrmPipelineStageRow) {
   return {
@@ -362,6 +363,168 @@ export class CrmService {
       }
       return { userId, deleted: true };
     });
+  }
+
+  /**
+   * Compares the desired member list with the current one: who is added, who
+   * is removed, how many deals each removed user owns, and whether the
+   * single-user rule target is among them. The creator is always kept.
+   */
+  private async planMembership(
+    tx: CrmTx,
+    pipeline: { id: number; createdBy: string | null },
+    rawUserIds: string[],
+  ) {
+    const desired = new Set(rawUserIds);
+    if (pipeline.createdBy) desired.add(pipeline.createdBy);
+
+    const currentRows = await tx
+      .select({ userId: crmPipelineUsers.userId })
+      .from(crmPipelineUsers)
+      .where(eq(crmPipelineUsers.pipelineId, pipeline.id));
+    const current = new Set(currentRows.map((row) => row.userId));
+
+    const addedIds = [...desired].filter((id) => !current.has(id));
+    const removedIds = [...current].filter((id) => !desired.has(id));
+
+    const added = addedIds.length
+      ? await tx
+          .select({ id: users.id, username: users.username, role: users.role, status: users.status })
+          .from(users)
+          .where(inArray(users.id, addedIds))
+      : [];
+    const inactiveOrMissing = addedIds.filter(
+      (id) => !added.some((row) => row.id === id && row.status !== 'inactive'),
+    );
+    if (inactiveOrMissing.length > 0) {
+      throw new BadRequestException('One or more users do not exist or are inactive.');
+    }
+
+    let removed: { userId: string; username: string | null; dealCount: number }[] = [];
+    if (removedIds.length > 0) {
+      const [people, counts] = await Promise.all([
+        tx
+          .select({ userId: users.id, username: users.username })
+          .from(users)
+          .where(inArray(users.id, removedIds))
+          .orderBy(asc(users.username)),
+        tx
+          .select({ userId: crmDeals.assignedUserId, count: sql<number>`count(*)::int` })
+          .from(crmDeals)
+          .where(and(eq(crmDeals.pipelineId, pipeline.id), inArray(crmDeals.assignedUserId, removedIds)))
+          .groupBy(crmDeals.assignedUserId),
+      ]);
+      const countByUser = new Map(counts.map((row) => [row.userId, row.count]));
+      removed = people.map((person) => ({ ...person, dealCount: countByUser.get(person.userId) ?? 0 }));
+    }
+
+    return { desired: [...desired], added, removedIds, removed };
+  }
+
+  /** What saving this member list would do — shown in the confirmation before saving. */
+  async previewPipelineUsers(pipelineId: number, userIds: string[], user: CrmUser) {
+    if (!canManagePipelineUsers(user)) {
+      throw new ForbiddenException('Only a superadmin can change pipeline access.');
+    }
+    const { pipeline } = await this.getVisiblePipeline(pipelineId, user);
+    const [rule] = await this.db
+      .select({ method: crmPipelines.dealAssignmentMethod, singleUserId: crmPipelines.dealAssignmentUserId })
+      .from(crmPipelines)
+      .where(eq(crmPipelines.id, pipeline.id));
+
+    const plan = await this.db.transaction((tx) => this.planMembership(tx, pipeline, userIds));
+    const singleUserRemoved =
+      rule?.method === 'single_user' && rule.singleUserId
+        ? (plan.removed.find((row) => row.userId === rule.singleUserId) ?? null)
+        : null;
+    return {
+      added: plan.added.map(({ id, username, role }) => ({ userId: id, username, role })),
+      removed: plan.removed,
+      dealsToUnassign: plan.removed.reduce((sum, row) => sum + row.dealCount, 0),
+      singleUserRemoved: singleUserRemoved
+        ? { userId: singleUserRemoved.userId, username: singleUserRemoved.username }
+        : null,
+    };
+  }
+
+  /**
+   * Replaces the pipeline's member list in one transaction. Deals owned by
+   * removed users are unassigned (requires `confirmUnassign`), and if the
+   * single-user target is removed the rule falls back to `manual`.
+   */
+  async savePipelineUsers(
+    pipelineId: number,
+    userIds: string[],
+    confirmUnassign: boolean,
+    user: CrmUser,
+  ) {
+    if (!canManagePipelineUsers(user)) {
+      throw new ForbiddenException('Only a superadmin can change pipeline access.');
+    }
+    const { pipeline } = await this.getVisiblePipeline(pipelineId, user);
+
+    const result = await this.db.transaction(async (tx) => {
+      // Same lock as deal assignment, so no deal can be given to a user
+      // while they are being removed.
+      const [locked] = await tx
+        .select({
+          method: crmPipelines.dealAssignmentMethod,
+          singleUserId: crmPipelines.dealAssignmentUserId,
+        })
+        .from(crmPipelines)
+        .where(eq(crmPipelines.id, pipeline.id))
+        .for('update');
+      if (!locked) throw new NotFoundException('Pipeline not found.');
+
+      const plan = await this.planMembership(tx, pipeline, userIds);
+      const dealsToUnassign = plan.removed.reduce((sum, row) => sum + row.dealCount, 0);
+      if (dealsToUnassign > 0 && !confirmUnassign) {
+        throw new ConflictException(
+          `The removed users own ${dealsToUnassign} deal${dealsToUnassign === 1 ? '' : 's'}. Confirm to unassign them.`,
+        );
+      }
+
+      let unassignedCount = 0;
+      let ruleChangedTo: string | null = null;
+      if (plan.removedIds.length > 0) {
+        // Unassign first: the composite FK to crm_pipeline_users is RESTRICT.
+        const cleared = await tx
+          .update(crmDeals)
+          .set({ assignedUserId: null, updatedAt: new Date() })
+          .where(and(eq(crmDeals.pipelineId, pipeline.id), inArray(crmDeals.assignedUserId, plan.removedIds)))
+          .returning({ id: crmDeals.id });
+        unassignedCount = cleared.length;
+
+        if (locked.method === 'single_user' && locked.singleUserId && plan.removedIds.includes(locked.singleUserId)) {
+          await tx
+            .update(crmPipelines)
+            .set({ dealAssignmentMethod: 'manual', dealAssignmentUserId: null, updatedAt: new Date() })
+            .where(eq(crmPipelines.id, pipeline.id));
+          ruleChangedTo = 'manual';
+        }
+
+        await tx
+          .delete(crmPipelineUsers)
+          .where(and(eq(crmPipelineUsers.pipelineId, pipeline.id), inArray(crmPipelineUsers.userId, plan.removedIds)));
+      }
+
+      if (plan.added.length > 0) {
+        await tx
+          .insert(crmPipelineUsers)
+          .values(plan.added.map((row) => ({ pipelineId: pipeline.id, userId: row.id })))
+          .onConflictDoNothing();
+      }
+
+      return {
+        addedCount: plan.added.length,
+        removedCount: plan.removedIds.length,
+        unassignedCount,
+        ruleChangedTo,
+      };
+    });
+
+    const members = await this.listPipelineUsers(pipelineId, user);
+    return { ...result, members };
   }
 
   /** Counts shown in the delete confirmation. */
