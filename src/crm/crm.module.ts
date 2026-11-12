@@ -3,14 +3,16 @@ import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ClientsModule } from '../clients/clients.module';
+import { CrmAssignmentController } from './crm-assignment.controller';
+import { CrmAssignmentService } from './crm-assignment.service';
 import { CrmDealsController } from './crm-deals.controller';
 import { CrmDealsService } from './crm-deals.service';
 import { CrmController } from './crm.controller';
 import { CrmService } from './crm.service';
 
 @Module({
-  controllers: [CrmController, CrmDealsController],
-  providers: [RolesGuard, CrmService, CrmDealsService],
+  controllers: [CrmController, CrmDealsController, CrmAssignmentController],
+  providers: [RolesGuard, CrmService, CrmAssignmentService, CrmDealsService],
   imports: [
     ClientsModule,
     JwtModule.registerAsync({
@@ -20,6 +22,6 @@ import { CrmService } from './crm.service';
       }),
     }),
   ],
-  exports: [CrmService, CrmDealsService],
+  exports: [CrmService, CrmAssignmentService, CrmDealsService],
 })
 export class CrmModule {}

@@ -27,7 +27,6 @@ import {
 } from './crm-access';
 import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
 import { isUniqueViolation } from './db-errors';
-import type { CrmDealAssignmentMethod } from './crm-assignment';
 
 function toStageResponse(stage: CrmPipelineStageRow) {
   return {
@@ -330,11 +329,19 @@ export class CrmService {
     // locks the same row before inserting an owner, so the owned-deal check
     // below cannot race with a new assignment.
     return this.db.transaction(async (tx) => {
-      await tx
-        .select({ id: crmPipelines.id })
+      const [locked] = await tx
+        .select({
+          method: crmPipelines.dealAssignmentMethod,
+          singleUserId: crmPipelines.dealAssignmentUserId,
+        })
         .from(crmPipelines)
         .where(eq(crmPipelines.id, pipeline.id))
         .for('update');
+      if (locked?.method === 'single_user' && locked.singleUserId === userId) {
+        throw new ConflictException(
+          'This user receives every new deal in this pipeline (Single user rule). Change the rule first.',
+        );
+      }
 
       const [owned] = await tx
         .select({ count: sql<number>`count(*)::int` })
@@ -354,45 +361,6 @@ export class CrmService {
         throw new NotFoundException('User does not have access to this pipeline.');
       }
       return { userId, deleted: true };
-    });
-  }
-
-  async updateDealAssignmentMethod(
-    pipelineId: number,
-    method: CrmDealAssignmentMethod,
-    user: CrmUser,
-  ) {
-    await this.getVisiblePipeline(pipelineId, user);
-
-    return this.db.transaction(async (tx) => {
-      const [pipeline] = await tx
-        .select({
-          id: crmPipelines.id,
-          dealAssignmentMethod: crmPipelines.dealAssignmentMethod,
-          roundRobinCursor: crmPipelines.roundRobinCursor,
-        })
-        .from(crmPipelines)
-        .where(eq(crmPipelines.id, pipelineId))
-        .for('update');
-      if (!pipeline) throw new NotFoundException('Pipeline not found.');
-
-      const [updated] = await tx
-        .update(crmPipelines)
-        .set({
-          dealAssignmentMethod: method,
-          roundRobinCursor:
-            method === 'round_robin' && pipeline.dealAssignmentMethod !== method
-              ? 0
-              : pipeline.roundRobinCursor,
-          updatedAt: new Date(),
-        })
-        .where(eq(crmPipelines.id, pipelineId))
-        .returning({
-          id: crmPipelines.id,
-          dealAssignmentMethod: crmPipelines.dealAssignmentMethod,
-        });
-      if (!updated) throw new NotFoundException('Pipeline not found.');
-      return updated;
     });
   }
 

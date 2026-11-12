@@ -28,18 +28,23 @@ export const crmPipelines = pgTable(
     dealAssignmentMethod: text('deal_assignment_method')
       .$type<CrmDealAssignmentMethod>()
       .notNull()
-      .default('creator_manual'),
+      .default('creator'),
     roundRobinCursor: integer('round_robin_cursor').notNull().default(0),
+    /** The user who receives every deal under the 'single_user' rule. */
+    dealAssignmentUserId: uuid('deal_assignment_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
   },
   (table) => [
     check('crm_pipelines_name_not_empty', sql`BTRIM(${table.name}) <> ''`),
     check('crm_pipelines_position_nonnegative', sql`${table.position} >= 0`),
     check(
       'crm_pipelines_deal_assignment_method_valid',
-      sql`${table.dealAssignmentMethod} IN ('round_robin', 'creator_manual', 'least_loaded')`,
+      sql`${table.dealAssignmentMethod} IN ('round_robin', 'single_user', 'creator', 'manual')`,
     ),
     check('crm_pipelines_round_robin_cursor_nonnegative', sql`${table.roundRobinCursor} >= 0`),
     index('crm_pipelines_position_idx').on(table.position, table.id),
+    index('crm_pipelines_deal_assignment_user_id_idx').on(table.dealAssignmentUserId),
   ],
 );
 
@@ -113,6 +118,9 @@ export const crmDeals = pgTable(
     index('crm_deals_created_by_idx').on(table.createdBy),
     index('crm_deals_pipeline_stage_idx').on(table.pipelineId, table.stageId),
     index('crm_deals_pipeline_assigned_user_idx').on(table.pipelineId, table.assignedUserId),
+    index('crm_deals_pipeline_unassigned_idx')
+      .on(table.pipelineId, table.createdAt, table.id)
+      .where(sql`${table.assignedUserId} IS NULL`),
   ],
 );
 

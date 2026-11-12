@@ -21,7 +21,6 @@ import { CreateCrmStageDto } from './dto/create-stage.dto';
 import { RenameCrmPipelineDto } from './dto/rename-pipeline.dto';
 import { RenameCrmStageDto } from './dto/rename-stage.dto';
 import { ReorderCrmStagesDto } from './dto/reorder-stages.dto';
-import { UpdateCrmDealAssignmentDto } from './dto/update-deal-assignment.dto';
 import { CrmUser } from './crm-access';
 import { CrmService } from './crm.service';
 
@@ -51,16 +50,6 @@ export class CrmController {
     @Body() dto: RenameCrmPipelineDto,
   ) {
     return this.crm.renamePipeline(pipelineId, dto.name, req.user);
-  }
-
-  /** Choose how new deals in this pipeline are assigned. */
-  @Patch(':pipelineId/deal-assignment')
-  updateDealAssignmentMethod(
-    @Req() req: AuthedRequest,
-    @Param('pipelineId', ParseIntPipe) pipelineId: number,
-    @Body() dto: UpdateCrmDealAssignmentDto,
-  ) {
-    return this.crm.updateDealAssignmentMethod(pipelineId, dto.method, req.user);
   }
 
   /** The pipeline's access list with user identity. Any viewer may read it. */
