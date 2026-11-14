@@ -4,6 +4,7 @@ import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { CrmUser } from './crm-access';
 import { CrmAssignmentService } from './crm-assignment.service';
+import { DistributeCrmDealsDto } from './dto/distribute-deals.dto';
 import { UnassignCrmDealsBySourceDto } from './dto/unassign-by-source.dto';
 import { UpdateCrmDealAssignmentDto } from './dto/update-deal-assignment.dto';
 
@@ -37,11 +38,15 @@ export class CrmAssignmentController {
     return this.assignment.updateRule(pipelineId, dto.method, dto.userId, req.user);
   }
 
-  /** Assign the next chunk (≤ 100) of unassigned deals by the saved rule. */
+  /** Bulk tool: assign the next chunk (≤ 100) of unassigned deals by `method` (not the saved rule). */
   @Roles('superadmin', 'superuser')
   @Post(':pipelineId/assignments/distribute')
-  distribute(@Req() req: AuthedRequest, @Param('pipelineId', ParseIntPipe) pipelineId: number) {
-    return this.assignment.distributeUnassigned(pipelineId, req.user);
+  distribute(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Body() dto: DistributeCrmDealsDto,
+  ) {
+    return this.assignment.distributeUnassigned(pipelineId, dto.method, dto.userId, req.user);
   }
 
   /** Unassign the next chunk (≤ 100) of deals assigned by `source`, optionally only one owner's. */

@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
@@ -22,13 +21,6 @@ type PipelineRow = typeof crmPipelines.$inferSelect;
 type EligibleUser = { id: string; username: string; role: string };
 
 const isSuper = (role: string) => role === 'superadmin' || role === 'superuser';
-
-const RULE_NAMES: Record<CrmDealAssignmentMethod, string> = {
-  round_robin: 'round robin',
-  single_user: 'single user',
-  creator: 'creator',
-  manual: 'manual',
-};
 
 /**
  * The single deal-assignment engine. Deal creation, bulk add and
@@ -132,9 +124,31 @@ export class CrmAssignmentService {
     adderId: string,
     count: number,
   ): Promise<(string | null)[]> {
+    return this.pickOwners(
+      tx,
+      pipeline,
+      pipeline.dealAssignmentMethod,
+      pipeline.dealAssignmentUserId,
+      adderId,
+      count,
+    );
+  }
+
+  /**
+   * Owners for `count` deals by `method`. Used by the new-deal rule (via
+   * chooseAssignees) and by the bulk tools, which pass their own method/user.
+   * Round robin advances the pipeline's shared cursor.
+   */
+  private async pickOwners(
+    tx: CrmTx,
+    pipeline: PipelineRow,
+    method: CrmDealAssignmentMethod,
+    singleUserId: string | null,
+    adderId: string,
+    count: number,
+  ): Promise<(string | null)[]> {
     if (count === 0) return [];
     const none = () => Array.from({ length: count }, () => null);
-    const method = pipeline.dealAssignmentMethod;
     if (method === 'manual') return none();
 
     const eligibleIds = await this.eligibleAssigneeIds(tx, pipeline.id, pipeline.createdBy);
@@ -161,10 +175,7 @@ export class CrmAssignmentService {
     }
 
     // single_user: every deal goes to the chosen user while they are eligible.
-    const owner =
-      pipeline.dealAssignmentUserId && eligibleIds.includes(pipeline.dealAssignmentUserId)
-        ? pipeline.dealAssignmentUserId
-        : null;
+    const owner = singleUserId && eligibleIds.includes(singleUserId) ? singleUserId : null;
     return Array.from({ length: count }, () => owner);
   }
 
@@ -309,30 +320,6 @@ export class CrmAssignmentService {
         return this.overviewIn(tx, pipeline);
       }
 
-      // One bulk rule at a time: while deals given by round robin or single
-      // user exist, switching to another rule is refused until they are reverted.
-      if (method !== pipeline.dealAssignmentMethod) {
-        const blocking = CRM_DISTRIBUTABLE_METHODS.filter((source) => source !== method);
-        const [blocker] = await tx
-          .select({ source: crmDeals.assignmentSource, count: sql<number>`count(*)::int` })
-          .from(crmDeals)
-          .where(
-            and(
-              eq(crmDeals.pipelineId, pipeline.id),
-              isNotNull(crmDeals.assignedUserId),
-              inArray(crmDeals.assignmentSource, [...blocking]),
-            ),
-          )
-          .groupBy(crmDeals.assignmentSource)
-          .limit(1);
-        if (blocker) {
-          const name = RULE_NAMES[blocker.source as CrmDealAssignmentMethod] ?? blocker.source;
-          throw new ConflictException(
-            `Revert ${name} first: ${blocker.count} deal${blocker.count === 1 ? ' was' : 's were'} assigned by it in this pipeline.`,
-          );
-        }
-      }
-
       const [updated] = await tx
         .update(crmPipelines)
         .set({
@@ -351,20 +338,30 @@ export class CrmAssignmentService {
   }
 
   /**
-   * Assigns up to CRM_DISTRIBUTE_CHUNK_SIZE of the pipeline's unassigned deals
-   * (oldest first) by its saved rule. The client calls it repeatedly until
-   * `remaining` is 0, showing progress. Super roles only (controller).
+   * Bulk tool: assigns up to CRM_DISTRIBUTE_CHUNK_SIZE of the pipeline's
+   * unassigned deals (oldest first) by `method`, independent of the pipeline's
+   * rule for new deals. round_robin shares them among eligible users;
+   * single_user gives them all to `targetUserId`. The client calls it
+   * repeatedly until `remaining` is 0. Super roles only (controller).
    */
-  async distributeUnassigned(pipelineId: number, user: CrmUser) {
+  async distributeUnassigned(
+    pipelineId: number,
+    method: (typeof CRM_DISTRIBUTABLE_METHODS)[number],
+    targetUserId: string | undefined,
+    user: CrmUser,
+  ) {
     await this.pipelines.getVisiblePipeline(pipelineId, user);
 
     return this.db.transaction(async (tx) => {
       const pipeline = await this.lockPipeline(tx, pipelineId);
-      const method = pipeline.dealAssignmentMethod;
-      if (!(CRM_DISTRIBUTABLE_METHODS as readonly string[]).includes(method)) {
-        throw new BadRequestException(
-          'Only round robin and single user can assign existing deals. Choose one of them first.',
-        );
+      if (method === 'single_user') {
+        if (!targetUserId) throw new BadRequestException('Choose the user who should receive the deals.');
+        const eligibleIds = await this.eligibleAssigneeIds(tx, pipeline.id, pipeline.createdBy);
+        if (!eligibleIds.includes(targetUserId)) {
+          throw new BadRequestException(
+            'That user must be active, have CRM access and have access to this pipeline.',
+          );
+        }
       }
 
       const batch = await tx
@@ -375,7 +372,14 @@ export class CrmAssignmentService {
         .limit(CRM_DISTRIBUTE_CHUNK_SIZE)
         .for('update');
 
-      const owners = await this.chooseAssignees(tx, pipeline, user.id, batch.length);
+      const owners = await this.pickOwners(
+        tx,
+        pipeline,
+        method,
+        method === 'single_user' ? (targetUserId ?? null) : null,
+        user.id,
+        batch.length,
+      );
       const assignments = batch
         .map(({ id }, index) => ({ dealId: id, assignedUserId: owners[index] }))
         .filter((row): row is { dealId: number; assignedUserId: string } =>
