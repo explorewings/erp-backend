@@ -201,6 +201,7 @@ export class CrmDealsService {
             stageId: firstStage.id,
             createdBy: user.id,
             assignedUserId,
+            assignmentSource: assignedUserId ? lockedPipeline.dealAssignmentMethod : null,
           })
           .returning();
 
@@ -272,6 +273,7 @@ export class CrmDealsService {
             stageId: firstStage.id,
             createdBy: user.id,
             assignedUserId: assignedUserIds[index],
+            assignmentSource: assignedUserIds[index] ? lockedPipeline.dealAssignmentMethod : null,
           })),
         )
         .onConflictDoNothing()
@@ -365,7 +367,12 @@ export class CrmDealsService {
 
       const [updated] = await tx
         .update(crmDeals)
-        .set({ assignedUserId: dto.assignedUserId, updatedAt: new Date() })
+        .set({
+          assignedUserId: dto.assignedUserId,
+          // Picked by hand in the deal drawer.
+          assignmentSource: dto.assignedUserId ? 'manual' : null,
+          updatedAt: new Date(),
+        })
         .where(eq(crmDeals.id, dealId))
         .returning();
       const client = await this.getDealClient(tx, updated.clientId);

@@ -4,6 +4,7 @@ import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { CrmUser } from './crm-access';
 import { CrmAssignmentService } from './crm-assignment.service';
+import { UnassignCrmDealsBySourceDto } from './dto/unassign-by-source.dto';
 import { UpdateCrmDealAssignmentDto } from './dto/update-deal-assignment.dto';
 
 type AuthedRequest = { user: CrmUser };
@@ -41,5 +42,16 @@ export class CrmAssignmentController {
   @Post(':pipelineId/assignments/distribute')
   distribute(@Req() req: AuthedRequest, @Param('pipelineId', ParseIntPipe) pipelineId: number) {
     return this.assignment.distributeUnassigned(pipelineId, req.user);
+  }
+
+  /** Unassign the next chunk (≤ 100) of deals assigned by `source`, optionally only one owner's. */
+  @Roles('superadmin', 'superuser')
+  @Post(':pipelineId/assignments/unassign')
+  unassign(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Body() dto: UnassignCrmDealsBySourceDto,
+  ) {
+    return this.assignment.unassignBySource(pipelineId, dto.source, dto.userId, req.user);
   }
 }

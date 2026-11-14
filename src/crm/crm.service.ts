@@ -490,7 +490,7 @@ export class CrmService {
         // Unassign first: the composite FK to crm_pipeline_users is RESTRICT.
         const cleared = await tx
           .update(crmDeals)
-          .set({ assignedUserId: null, updatedAt: new Date() })
+          .set({ assignedUserId: null, assignmentSource: null, updatedAt: new Date() })
           .where(and(eq(crmDeals.pipelineId, pipeline.id), inArray(crmDeals.assignedUserId, plan.removedIds)))
           .returning({ id: crmDeals.id });
         unassignedCount = cleared.length;

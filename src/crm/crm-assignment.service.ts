@@ -4,11 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { access, accessItems, crmDeals, crmPipelineUsers, crmPipelines, users } from '../schema';
 import { CrmUser } from './crm-access';
 import {
+  CRM_DEAL_ASSIGNMENT_METHODS,
   CRM_DISTRIBUTABLE_METHODS,
   CRM_DISTRIBUTE_CHUNK_SIZE,
   CrmDealAssignmentMethod,
@@ -184,8 +185,34 @@ export class CrmAssignmentService {
       .where(eq(crmDeals.pipelineId, pipeline.id));
     const total = totals?.total ?? 0;
     const unassigned = totals?.unassigned ?? 0;
+
+    const sourceRows = await tx
+      .select({ source: crmDeals.assignmentSource, count: sql<number>`count(*)::int` })
+      .from(crmDeals)
+      .where(and(eq(crmDeals.pipelineId, pipeline.id), isNotNull(crmDeals.assignedUserId)))
+      .groupBy(crmDeals.assignmentSource);
+    const assignedBySource: Record<CrmDealAssignmentMethod | 'unknown', number> = {
+      round_robin: 0,
+      single_user: 0,
+      creator: 0,
+      manual: 0,
+      unknown: 0,
+    };
+    for (const row of sourceRows) {
+      const key = (CRM_DEAL_ASSIGNMENT_METHODS as readonly string[]).includes(row.source ?? '')
+        ? (row.source as CrmDealAssignmentMethod)
+        : 'unknown';
+      assignedBySource[key] += row.count;
+    }
     const singleUserId = pipeline.dealAssignmentUserId;
     const singleUser = singleUserId ? eligible.find(({ id }) => id === singleUserId) : undefined;
+
+    // Who currently owns deals given by each bulk rule, including users who
+    // have since lost eligibility, so their deals can be unassigned per user.
+    const [singleUserOwners, roundRobinOwners] = await Promise.all([
+      this.ownersBySource(tx, pipeline.id, 'single_user', eligibleIds),
+      this.ownersBySource(tx, pipeline.id, 'round_robin', eligibleIds),
+    ]);
 
     return {
       pipelineId: pipeline.id,
@@ -193,6 +220,8 @@ export class CrmAssignmentService {
       total,
       assigned: total - unassigned,
       unassigned,
+      /** Assigned deals by how their current owner was assigned. */
+      assignedBySource,
       users: eligible
         .map(({ id, username, role }) => ({ userId: id, username, role, dealCount: loads.get(id) ?? 0 }))
         .sort((a, b) => a.username.localeCompare(b.username)),
@@ -201,8 +230,33 @@ export class CrmAssignmentService {
       singleUsername: singleUser?.username ?? null,
       /** False when the chosen user lost access, CRM access or was deactivated. */
       singleUserEligible: Boolean(singleUser),
+      /** Owners of deals assigned by the single-user rule, with per-user counts. */
+      singleUserOwners,
+      /** Owners of deals assigned by round robin, with per-user counts. */
+      roundRobinOwners,
       chunkSize: CRM_DISTRIBUTE_CHUNK_SIZE,
     };
+  }
+
+  /** Per-owner counts of deals whose current owner was assigned by `source`. */
+  private async ownersBySource(
+    tx: CrmTx,
+    pipelineId: number,
+    source: CrmDealAssignmentMethod,
+    eligibleIds: string[],
+  ) {
+    const rows = await tx
+      .select({
+        userId: users.id,
+        username: users.username,
+        dealCount: sql<number>`count(${crmDeals.id})::int`,
+      })
+      .from(crmDeals)
+      .innerJoin(users, eq(users.id, crmDeals.assignedUserId))
+      .where(and(eq(crmDeals.pipelineId, pipelineId), eq(crmDeals.assignmentSource, source)))
+      .groupBy(users.id, users.username)
+      .orderBy(asc(users.username));
+    return rows.map((row) => ({ ...row, eligible: eligibleIds.includes(row.userId) }));
   }
 
   /** Rule, deal totals and per-user load for the Deal assign tab. Any viewer. */
@@ -303,7 +357,7 @@ export class CrmAssignmentService {
         );
         await tx.execute(sql`
           UPDATE crm_deals AS d
-          SET assigned_user_id = v.user_id, updated_at = now()
+          SET assigned_user_id = v.user_id, assignment_source = ${method}, updated_at = now()
           FROM (VALUES ${values}) AS v(deal_id, user_id)
           WHERE d.id = v.deal_id AND d.pipeline_id = ${pipelineId}
         `);
@@ -315,6 +369,52 @@ export class CrmAssignmentService {
         .where(and(eq(crmDeals.pipelineId, pipelineId), isNull(crmDeals.assignedUserId)));
 
       return { method, assignedCount: assignments.length, remaining, assignments };
+    });
+  }
+
+  /**
+   * Unassigns up to CRM_DISTRIBUTE_CHUNK_SIZE deals whose current owner was
+   * assigned by `source` (e.g. every round robin assignment). The client
+   * calls it repeatedly until `remaining` is 0. Super roles only (controller).
+   */
+  async unassignBySource(
+    pipelineId: number,
+    source: CrmDealAssignmentMethod,
+    ownerId: string | undefined,
+    user: CrmUser,
+  ) {
+    await this.pipelines.getVisiblePipeline(pipelineId, user);
+
+    return this.db.transaction(async (tx) => {
+      await this.lockPipeline(tx, pipelineId);
+      const bySource = and(
+        eq(crmDeals.pipelineId, pipelineId),
+        isNotNull(crmDeals.assignedUserId),
+        eq(crmDeals.assignmentSource, source),
+        ownerId ? eq(crmDeals.assignedUserId, ownerId) : undefined,
+      );
+
+      const batch = await tx
+        .select({ id: crmDeals.id })
+        .from(crmDeals)
+        .where(bySource)
+        .orderBy(asc(crmDeals.createdAt), asc(crmDeals.id))
+        .limit(CRM_DISTRIBUTE_CHUNK_SIZE)
+        .for('update');
+
+      if (batch.length > 0) {
+        await tx
+          .update(crmDeals)
+          .set({ assignedUserId: null, assignmentSource: null, updatedAt: new Date() })
+          .where(inArray(crmDeals.id, batch.map(({ id }) => id)));
+      }
+
+      const [{ remaining }] = await tx
+        .select({ remaining: sql<number>`count(*)::int` })
+        .from(crmDeals)
+        .where(bySource);
+
+      return { source, userId: ownerId ?? null, unassignedCount: batch.length, remaining };
     });
   }
 }

@@ -99,6 +99,8 @@ export const crmDeals = pgTable(
     stageId: integer('stage_id').notNull(),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     assignedUserId: uuid('assigned_user_id').references(() => users.id, { onDelete: 'set null' }),
+    /** How the current owner was assigned (CRM_DEAL_ASSIGNMENT_METHODS); null = unassigned / unknown. */
+    assignmentSource: text('assignment_source'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -118,6 +120,13 @@ export const crmDeals = pgTable(
     index('crm_deals_created_by_idx').on(table.createdBy),
     index('crm_deals_pipeline_stage_idx').on(table.pipelineId, table.stageId),
     index('crm_deals_pipeline_assigned_user_idx').on(table.pipelineId, table.assignedUserId),
+    check(
+      'crm_deals_assignment_source_valid',
+      sql`${table.assignmentSource} IS NULL OR ${table.assignmentSource} IN ('round_robin', 'single_user', 'creator', 'manual')`,
+    ),
+    index('crm_deals_pipeline_assignment_source_idx')
+      .on(table.pipelineId, table.assignmentSource)
+      .where(sql`${table.assignedUserId} IS NOT NULL`),
     index('crm_deals_pipeline_unassigned_idx')
       .on(table.pipelineId, table.createdAt, table.id)
       .where(sql`${table.assignedUserId} IS NULL`),
