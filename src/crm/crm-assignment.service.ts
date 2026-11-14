@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
@@ -21,6 +22,13 @@ type PipelineRow = typeof crmPipelines.$inferSelect;
 type EligibleUser = { id: string; username: string; role: string };
 
 const isSuper = (role: string) => role === 'superadmin' || role === 'superuser';
+
+const RULE_NAMES: Record<CrmDealAssignmentMethod, string> = {
+  round_robin: 'round robin',
+  single_user: 'single user',
+  creator: 'creator',
+  manual: 'manual',
+};
 
 /**
  * The single deal-assignment engine. Deal creation, bulk add and
@@ -299,6 +307,30 @@ export class CrmAssignmentService {
       }
       if (pipeline.dealAssignmentMethod === method && pipeline.dealAssignmentUserId === singleUserId) {
         return this.overviewIn(tx, pipeline);
+      }
+
+      // One bulk rule at a time: while deals given by round robin or single
+      // user exist, switching to another rule is refused until they are reverted.
+      if (method !== pipeline.dealAssignmentMethod) {
+        const blocking = CRM_DISTRIBUTABLE_METHODS.filter((source) => source !== method);
+        const [blocker] = await tx
+          .select({ source: crmDeals.assignmentSource, count: sql<number>`count(*)::int` })
+          .from(crmDeals)
+          .where(
+            and(
+              eq(crmDeals.pipelineId, pipeline.id),
+              isNotNull(crmDeals.assignedUserId),
+              inArray(crmDeals.assignmentSource, [...blocking]),
+            ),
+          )
+          .groupBy(crmDeals.assignmentSource)
+          .limit(1);
+        if (blocker) {
+          const name = RULE_NAMES[blocker.source as CrmDealAssignmentMethod] ?? blocker.source;
+          throw new ConflictException(
+            `Revert ${name} first: ${blocker.count} deal${blocker.count === 1 ? ' was' : 's were'} assigned by it in this pipeline.`,
+          );
+        }
       }
 
       const [updated] = await tx

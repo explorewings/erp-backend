@@ -5,7 +5,6 @@ import {
   Get,
   Param,
   ParseIntPipe,
-  ParseUUIDPipe,
   Patch,
   Post,
   Put,
@@ -15,7 +14,6 @@ import {
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
-import { AddCrmPipelineUserDto } from './dto/add-pipeline-user.dto';
 import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
 import { CreateCrmStageDto } from './dto/create-stage.dto';
 import { PreviewCrmPipelineUsersDto, SaveCrmPipelineUsersDto } from './dto/save-pipeline-users.dto';
@@ -62,17 +60,6 @@ export class CrmController {
     return this.crm.listPipelineUsers(pipelineId, req.user);
   }
 
-  /** Grant a user access to the pipeline. Superadmin/superuser for now. */
-  @Roles('superadmin', 'superuser')
-  @Post(':pipelineId/users')
-  addPipelineUser(
-    @Req() req: AuthedRequest,
-    @Param('pipelineId', ParseIntPipe) pipelineId: number,
-    @Body() dto: AddCrmPipelineUserDto,
-  ) {
-    return this.crm.addPipelineUser(pipelineId, dto.userId, req.user);
-  }
-
   /** What saving this member list would change (removed users' deal counts). */
   @Roles('superadmin', 'superuser')
   @Post(':pipelineId/users/preview')
@@ -93,17 +80,6 @@ export class CrmController {
     @Body() dto: SaveCrmPipelineUsersDto,
   ) {
     return this.crm.savePipelineUsers(pipelineId, dto.userIds, dto.confirmUnassign === true, req.user);
-  }
-
-  /** Remove a user's pipeline access. Superadmin/superuser for now. */
-  @Roles('superadmin', 'superuser')
-  @Delete(':pipelineId/users/:userId')
-  removePipelineUser(
-    @Req() req: AuthedRequest,
-    @Param('pipelineId', ParseIntPipe) pipelineId: number,
-    @Param('userId', ParseUUIDPipe) userId: string,
-  ) {
-    return this.crm.removePipelineUser(pipelineId, userId, req.user);
   }
 
   /** Deal and stage counts for the delete confirmation. */
