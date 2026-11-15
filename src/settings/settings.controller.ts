@@ -19,7 +19,7 @@ import { and, eq } from 'drizzle-orm';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { DRIZZLE, DrizzleDb } from '../database.module';
-import { access, accessItems, crmDeals, NewUserRow, UserRow, users } from '../schema';
+import { access, accessItems, crmDeals, crmPipelines, NewUserRow, UserRow, users } from '../schema';
 import { UsersService } from '../users/users.service';
 import { CheckUserAvailabilityDto } from './dto/check-user-availability.dto';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -204,10 +204,17 @@ export class SettingsController {
     }
     try {
       await this.db.transaction(async (tx) => {
+        // Their deals become unassigned, so nothing records how they were assigned any more.
         await tx
           .update(crmDeals)
-          .set({ assignedUserId: null, updatedAt: new Date() })
+          .set({ assignedUserId: null, assignmentSource: null, updatedAt: new Date() })
           .where(eq(crmDeals.assignedUserId, id));
+        // A pipeline that sent every new deal to this user falls back to manual,
+        // same as removing the single-user target from the pipeline's access list.
+        await tx
+          .update(crmPipelines)
+          .set({ dealAssignmentMethod: 'manual', dealAssignmentUserId: null, updatedAt: new Date() })
+          .where(eq(crmPipelines.dealAssignmentUserId, id));
         await tx.delete(users).where(eq(users.id, id));
       });
     } catch (error) {

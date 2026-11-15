@@ -199,17 +199,23 @@ export class CrmService {
       seen.add(nameKey(stage));
     }
 
-    // The creator always has access. Reject unknown or inactive users up front
-    // instead of surfacing a foreign-key violation as a 500.
-    const allowedUserIds = [...new Set([user.id, ...(dto.allowedUserIds ?? [])])];
-    const activeUsers = await this.db
-      .select({ id: users.id })
-      .from(users)
-      .where(and(inArray(users.id, allowedUserIds), ne(users.status, 'inactive')));
-    const activeIds = new Set(activeUsers.map((row) => row.id));
-    if (allowedUserIds.some((id) => id !== user.id && !activeIds.has(id))) {
+    // The creator always has access — unless they are a super role, who sees
+    // every pipeline anyway and never sits in an access list. Reject unknown,
+    // inactive or super-role users up front instead of surfacing a 500.
+    const requestedIds = [...new Set(dto.allowedUserIds ?? [])].filter((id) => id !== user.id);
+    const candidates = requestedIds.length
+      ? await this.db
+          .select({ id: users.id, role: users.role })
+          .from(users)
+          .where(and(inArray(users.id, requestedIds), ne(users.status, 'inactive')))
+      : [];
+    if (candidates.length !== requestedIds.length) {
       throw new BadRequestException('One or more selected users do not exist or are inactive.');
     }
+    if (candidates.some(({ role }) => isSuperRole(role))) {
+      throw new BadRequestException('Superadmins already have full access and cannot be added to a pipeline.');
+    }
+    const allowedUserIds = [...(isSuperRole(user.role) ? [] : [user.id]), ...requestedIds];
 
     try {
       return await this.db.transaction(async (tx) => {
@@ -237,10 +243,12 @@ export class CrmService {
           )
           .returning();
 
-        await tx
-          .insert(crmPipelineUsers)
-          .values(allowedUserIds.map((userId) => ({ pipelineId: pipeline.id, userId })))
-          .onConflictDoNothing();
+        if (allowedUserIds.length > 0) {
+          await tx
+            .insert(crmPipelineUsers)
+            .values(allowedUserIds.map((userId) => ({ pipelineId: pipeline.id, userId })))
+            .onConflictDoNothing();
+        }
 
         return toPipelineResponse(pipeline, createdStages, allowedUserIds, true);
       });
@@ -304,6 +312,16 @@ export class CrmService {
   ) {
     const desired = new Set(rawUserIds);
     if (pipeline.createdBy) desired.add(pipeline.createdBy);
+    // Super roles never sit in an access list (they see every pipeline).
+    const superRows = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(and(inArray(users.id, [...desired]), inArray(users.role, ['superadmin', 'superuser'])));
+    const superIds = new Set(superRows.map(({ id }) => id));
+    if (rawUserIds.some((id) => superIds.has(id))) {
+      throw new BadRequestException('Superadmins already have full access and cannot be added to a pipeline.');
+    }
+    for (const id of superIds) desired.delete(id);
 
     const currentRows = await tx
       .select({ userId: crmPipelineUsers.userId })

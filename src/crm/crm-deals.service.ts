@@ -98,9 +98,8 @@ export class CrmDealsService {
         ),
       )
       .limit(1);
-    if (menuItem.length === 0) {
-      return activeUsers.filter(({ role }) => role === 'superadmin' || role === 'superuser');
-    }
+    // Super roles have full access already; they are never offered for an access list.
+    if (menuItem.length === 0) return [];
 
     const regularUserIds = activeUsers
       .filter(({ role }) => role !== 'superadmin' && role !== 'superuser')
@@ -120,8 +119,7 @@ export class CrmDealsService {
       : [];
     const grantedUserIds = new Set(menuGrants.map(({ userId }) => userId));
     return activeUsers.filter(
-      ({ id, role }) =>
-        role === 'superadmin' || role === 'superuser' || grantedUserIds.has(id),
+      ({ id, role }) => role !== 'superadmin' && role !== 'superuser' && grantedUserIds.has(id),
     );
   }
 

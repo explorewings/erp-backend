@@ -27,7 +27,8 @@ const isSuper = (role: string) => role === 'superadmin' || role === 'superuser';
  * "distribute unassigned" all pick owners through chooseAssignees().
  *
  * Eligible owners = pipeline members ∪ pipeline creator, active, with CRM menu
- * access (super roles always pass), ordered by user id.
+ * access, ordered by user id. Super roles (superadmin/superuser) are never
+ * eligible: they see every pipeline and configure assignment, but own no deals.
  */
 @Injectable()
 export class CrmAssignmentService {
@@ -55,11 +56,13 @@ export class CrmAssignmentService {
     ];
     if (candidateIds.length === 0) return [];
 
-    const activeUsers = await tx
-      .select({ id: users.id, username: users.username, role: users.role })
-      .from(users)
-      .where(and(inArray(users.id, candidateIds), eq(users.status, 'active')))
-      .orderBy(asc(users.id));
+    const activeUsers = (
+      await tx
+        .select({ id: users.id, username: users.username, role: users.role })
+        .from(users)
+        .where(and(inArray(users.id, candidateIds), eq(users.status, 'active')))
+        .orderBy(asc(users.id))
+    ).filter(({ role }) => !isSuper(role));
     if (activeUsers.length === 0) return [];
 
     const [menuItem] = await tx
@@ -73,9 +76,9 @@ export class CrmAssignmentService {
         ),
       )
       .limit(1);
-    if (!menuItem) return activeUsers.filter(({ role }) => isSuper(role));
+    if (!menuItem) return [];
 
-    const regularUserIds = activeUsers.filter(({ role }) => !isSuper(role)).map(({ id }) => id);
+    const regularUserIds = activeUsers.map(({ id }) => id);
     const menuGrants = regularUserIds.length
       ? await tx
           .select({ userId: access.userId })
@@ -90,7 +93,7 @@ export class CrmAssignmentService {
           )
       : [];
     const grantedUserIds = new Set(menuGrants.map(({ userId }) => userId));
-    return activeUsers.filter(({ id, role }) => isSuper(role) || grantedUserIds.has(id));
+    return activeUsers.filter(({ id }) => grantedUserIds.has(id));
   }
 
   async eligibleAssigneeIds(tx: CrmTx, pipelineId: number, pipelineCreatorId: string | null) {
