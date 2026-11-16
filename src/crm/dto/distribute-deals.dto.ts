@@ -14,4 +14,9 @@ export class DistributeCrmDealsDto {
   @IsUUID()
   @IsOptional()
   userId?: string;
+
+  /** Same id on every chunk of one run, so the history shows the run as one entry. */
+  @IsOptional()
+  @IsUUID()
+  runId?: string;
 }

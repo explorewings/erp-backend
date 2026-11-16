@@ -4,9 +4,18 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { and, asc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { DRIZZLE, DrizzleDb } from '../database.module';
-import { access, accessItems, crmDeals, crmPipelineUsers, crmPipelines, users } from '../schema';
+import {
+  access,
+  accessItems,
+  crmDeals,
+  crmPipelineActivity,
+  crmPipelineUsers,
+  crmPipelines,
+  CrmPipelineActivityAction,
+  users,
+} from '../schema';
 import { CrmUser } from './crm-access';
 import {
   CRM_DEAL_ASSIGNMENT_METHODS,
@@ -15,12 +24,52 @@ import {
   CrmDealAssignmentMethod,
 } from './crm-assignment';
 import { CrmService } from './crm.service';
+import { logPipelineActivity } from './pipeline-activity';
 
 export type CrmTx = Parameters<Parameters<DrizzleDb['transaction']>[0]>[0];
 type PipelineRow = typeof crmPipelines.$inferSelect;
 type EligibleUser = { id: string; username: string; role: string };
 
 const isSuper = (role: string) => role === 'superadmin' || role === 'superuser';
+
+const ACTIVITY_PAGE_SIZE = 50;
+type PerUser = { userId: string; username: string | null; count: number };
+
+/** Cursor = the last group's (max(created_at), max(id)), as base64 JSON. */
+function decodeActivityCursor(cursor: string): { t: string; id: number } {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64').toString('utf8')) as { t?: unknown; id?: unknown };
+    if (
+      typeof parsed.t === 'string' &&
+      /^\d{4}-\d{2}-\d{2}[ T][0-9:.]+(Z|[+-]\d{2}(:?\d{2})?)?$/.test(parsed.t) &&
+      typeof parsed.id === 'number' &&
+      Number.isSafeInteger(parsed.id) &&
+      parsed.id > 0
+    ) {
+      return { t: parsed.t, id: parsed.id };
+    }
+  } catch {
+    // fall through to the 400 below
+  }
+  throw new BadRequestException('Invalid cursor.');
+}
+
+const encodeActivityCursor = (t: string, id: number) =>
+  Buffer.from(JSON.stringify({ t, id }), 'utf8').toString('base64');
+
+/** Adds each chunk's per-user counts into one list (sorted by username). */
+function mergePerUser(lists: unknown[]): PerUser[] {
+  const merged = new Map<string, PerUser>();
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const row of list as PerUser[]) {
+      const existing = merged.get(row.userId);
+      if (existing) existing.count += row.count;
+      else merged.set(row.userId, { ...row });
+    }
+  }
+  return [...merged.values()].sort((a, b) => (a.username ?? '').localeCompare(b.username ?? ''));
+}
 
 /**
  * The single deal-assignment engine. Deal creation, bulk add and
@@ -182,6 +231,26 @@ export class CrmAssignmentService {
     return Array.from({ length: count }, () => owner);
   }
 
+  private async usernamesFor(tx: CrmTx, userIds: string[]) {
+    const ids = [...new Set(userIds)];
+    if (ids.length === 0) return new Map<string, string>();
+    const rows = await tx
+      .select({ id: users.id, username: users.username })
+      .from(users)
+      .where(inArray(users.id, ids));
+    return new Map(rows.map(({ id, username }) => [id, username]));
+  }
+
+  /** Deals per owner, with usernames, for the history's per-user split. */
+  private async perUser(tx: CrmTx, ownerIds: string[]): Promise<PerUser[]> {
+    const counts = new Map<string, number>();
+    for (const id of ownerIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+    const names = await this.usernamesFor(tx, [...counts.keys()]);
+    return [...counts.entries()]
+      .map(([userId, count]) => ({ userId, username: names.get(userId) ?? null, count }))
+      .sort((a, b) => (a.username ?? '').localeCompare(b.username ?? ''));
+  }
+
   async lockPipeline(tx: CrmTx, pipelineId: number) {
     const [pipeline] = await tx
       .select()
@@ -231,10 +300,18 @@ export class CrmAssignmentService {
 
     // Who currently owns deals given by each bulk rule, including users who
     // have since lost eligibility, so their deals can be unassigned per user.
-    const [singleUserOwners, roundRobinOwners] = await Promise.all([
+    const [singleOwners, roundRobinOwnerRows] = await Promise.all([
       this.ownersBySource(tx, pipeline.id, 'single_user', eligibleIds),
       this.ownersBySource(tx, pipeline.id, 'round_robin', eligibleIds),
     ]);
+    // Every deal each owner holds here, however assigned (for "Unassign all").
+    const ownerTotals = await this.loadsFor(tx, pipeline.id, [
+      ...new Set([...singleOwners, ...roundRobinOwnerRows].map(({ userId }) => userId)),
+    ]);
+    const withTotals = (rows: typeof singleOwners) =>
+      rows.map((row) => ({ ...row, totalDeals: ownerTotals.get(row.userId) ?? row.dealCount }));
+    const singleUserOwners = withTotals(singleOwners);
+    const roundRobinOwners = withTotals(roundRobinOwnerRows);
 
     return {
       pipelineId: pipeline.id,
@@ -336,6 +413,23 @@ export class CrmAssignmentService {
         })
         .where(eq(crmPipelines.id, pipelineId))
         .returning();
+
+      const fromUserId = pipeline.dealAssignmentUserId;
+      const names = await this.usernamesFor(
+        tx,
+        [fromUserId, singleUserId].filter((id): id is string => Boolean(id)),
+      );
+      await logPipelineActivity(tx, {
+        pipelineId,
+        action: 'rule_changed',
+        actor: user,
+        meta: {
+          fromMethod: pipeline.dealAssignmentMethod,
+          toMethod: method,
+          ...(fromUserId ? { fromUserId, fromUsername: names.get(fromUserId) ?? null } : {}),
+          ...(singleUserId ? { toUserId: singleUserId, toUsername: names.get(singleUserId) ?? null } : {}),
+        },
+      });
       return this.overviewIn(tx, updated);
     });
   }
@@ -352,6 +446,7 @@ export class CrmAssignmentService {
     method: (typeof CRM_DISTRIBUTABLE_METHODS)[number],
     targetUserId: string | undefined,
     user: CrmUser,
+    runId?: string,
   ) {
     await this.pipelines.getVisiblePipeline(pipelineId, user);
 
@@ -407,6 +502,21 @@ export class CrmAssignmentService {
         .from(crmDeals)
         .where(and(eq(crmDeals.pipelineId, pipelineId), isNull(crmDeals.assignedUserId)));
 
+      if (assignments.length > 0) {
+        await logPipelineActivity(tx, {
+          pipelineId,
+          action: 'deals_assigned',
+          actor: user,
+          runId,
+          meta: {
+            method,
+            count: assignments.length,
+            perUser: await this.perUser(tx, assignments.map(({ assignedUserId }) => assignedUserId)),
+            remaining,
+          },
+        });
+      }
+
       return { method, assignedCount: assignments.length, remaining, assignments };
     });
   }
@@ -418,10 +528,12 @@ export class CrmAssignmentService {
    */
   async unassignBySource(
     pipelineId: number,
-    source: CrmDealAssignmentMethod,
+    source: CrmDealAssignmentMethod | undefined,
     ownerId: string | undefined,
     user: CrmUser,
+    runId?: string,
   ) {
+    if (!source && !ownerId) throw new BadRequestException('Choose which assignments to undo.');
     await this.pipelines.getVisiblePipeline(pipelineId, user);
 
     return this.db.transaction(async (tx) => {
@@ -429,12 +541,12 @@ export class CrmAssignmentService {
       const bySource = and(
         eq(crmDeals.pipelineId, pipelineId),
         isNotNull(crmDeals.assignedUserId),
-        eq(crmDeals.assignmentSource, source),
+        source ? eq(crmDeals.assignmentSource, source) : undefined,
         ownerId ? eq(crmDeals.assignedUserId, ownerId) : undefined,
       );
 
       const batch = await tx
-        .select({ id: crmDeals.id })
+        .select({ id: crmDeals.id, ownerId: crmDeals.assignedUserId })
         .from(crmDeals)
         .where(bySource)
         .orderBy(asc(crmDeals.createdAt), asc(crmDeals.id))
@@ -453,7 +565,116 @@ export class CrmAssignmentService {
         .from(crmDeals)
         .where(bySource);
 
-      return { source, userId: ownerId ?? null, unassignedCount: batch.length, remaining };
+      if (batch.length > 0) {
+        const perUser = await this.perUser(
+          tx,
+          batch.map((row) => row.ownerId).filter((id): id is string => Boolean(id)),
+        );
+        await logPipelineActivity(tx, {
+          pipelineId,
+          action: 'deals_unassigned',
+          actor: user,
+          runId,
+          meta: {
+            source: source ?? null,
+            ...(ownerId
+              ? { userId: ownerId, username: perUser.find((row) => row.userId === ownerId)?.username ?? null }
+              : {}),
+            count: batch.length,
+            perUser,
+            remaining,
+          },
+        });
+      }
+
+      return { source: source ?? null, userId: ownerId ?? null, unassignedCount: batch.length, remaining };
     });
+  }
+
+  // ------------------------------------------------------------ history
+
+  /**
+   * WI-1b: the pipeline's drawer history, newest first. Paged by run, not by
+   * row: chunks sharing a run_id are summed into one item and a run is never
+   * split across pages. Any pipeline viewer; 404 when the pipeline is invisible.
+   */
+  async listActivity(
+    pipelineId: number,
+    query: { cursor?: string; limit?: number; action?: CrmPipelineActivityAction[] },
+    user: CrmUser,
+  ) {
+    await this.pipelines.getVisiblePipeline(pipelineId, user);
+    const limit = query.limit ?? ACTIVITY_PAGE_SIZE;
+    const after = query.cursor ? decodeActivityCursor(query.cursor) : null;
+    const a = crmPipelineActivity;
+
+    const scope = and(
+      eq(a.pipelineId, pipelineId),
+      query.action?.length ? inArray(a.action, query.action) : undefined,
+    );
+    const groupKey = sql<string>`COALESCE(${a.runId}::text, 'single:' || ${a.id}::text)`;
+    const lastAt = sql`max(${a.createdAt})`;
+    const lastId = sql<number>`max(${a.id})`;
+
+    const groups = await this.db
+      .select({ key: groupKey, lastAt: sql<string>`${lastAt}::text`, lastId })
+      .from(a)
+      .where(scope)
+      .groupBy(groupKey)
+      .having(after ? sql`(${lastAt}, ${lastId}) < (${after.t}::timestamptz, ${after.id}::int)` : undefined)
+      .orderBy(desc(lastAt), desc(lastId))
+      .limit(limit + 1);
+
+    const hasMore = groups.length > limit;
+    const page = groups.slice(0, limit);
+    if (page.length === 0) return { items: [], nextCursor: null, hasMore: false };
+
+    const rows = await this.db
+      .select()
+      .from(a)
+      .where(and(scope, inArray(groupKey, page.map(({ key }) => key))))
+      .orderBy(asc(a.createdAt), asc(a.id));
+
+    const byKey = new Map<string, (typeof rows)[number][]>();
+    for (const row of rows) {
+      const key = row.runId ?? `single:${row.id}`;
+      const list = byKey.get(key);
+      if (list) list.push(row);
+      else byKey.set(key, [row]);
+    }
+
+    const items = page.flatMap(({ key }) => {
+      const chunks = byKey.get(key) ?? [];
+      const first = chunks[0];
+      const last = chunks[chunks.length - 1];
+      if (!first || !last) return [];
+      let meta: Record<string, unknown> = { ...last.meta };
+      if (chunks.length > 1 && (last.action === 'deals_assigned' || last.action === 'deals_unassigned')) {
+        meta = {
+          ...meta,
+          count: chunks.reduce((sum, row) => sum + (Number(row.meta.count) || 0), 0),
+          perUser: mergePerUser(chunks.map((row) => row.meta.perUser)),
+        };
+      }
+      return [
+        {
+          id: last.id,
+          runId: last.runId,
+          action: last.action,
+          meta,
+          actor: last.actorId || last.actorName ? { id: last.actorId, username: last.actorName } : null,
+          chunkCount: chunks.length,
+          startedAt: first.createdAt,
+          createdAt: last.createdAt,
+        },
+      ];
+    });
+
+    const tail = page[page.length - 1];
+    return {
+      items,
+      nextCursor: hasMore ? encodeActivityCursor(tail.lastAt, tail.lastId) : null,
+      hasMore,
+    };
   }
 }

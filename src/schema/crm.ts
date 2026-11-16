@@ -4,6 +4,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgTable,
   primaryKey,
   serial,
@@ -130,6 +131,46 @@ export const crmDeals = pgTable(
     index('crm_deals_pipeline_unassigned_idx')
       .on(table.pipelineId, table.createdAt, table.id)
       .where(sql`${table.assignedUserId} IS NULL`),
+  ],
+);
+
+
+export const CRM_PIPELINE_ACTIVITY_ACTIONS = [
+  'rule_changed',
+  'rule_auto_changed',
+  'deals_assigned',
+  'deals_unassigned',
+  'access_changed',
+] as const;
+export type CrmPipelineActivityAction = (typeof CRM_PIPELINE_ACTIVITY_ACTIONS)[number];
+
+/** WI-1b: history of Assign users drawer actions, one row per action or bulk-run chunk. */
+export const crmPipelineActivity = pgTable(
+  'crm_pipeline_activity',
+  {
+    id: serial('id').primaryKey(),
+    pipelineId: integer('pipeline_id')
+      .notNull()
+      .references(() => crmPipelines.id, { onDelete: 'cascade' }),
+    actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
+    /** Snapshot at write time, so renamed or deleted actors still render. */
+    actorName: text('actor_name'),
+    action: text('action').$type<CrmPipelineActivityAction>().notNull(),
+    /** Groups the chunks of one bulk run. */
+    runId: uuid('run_id'),
+    meta: jsonb('meta').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check(
+      'crm_pipeline_activity_action_valid',
+      sql`${table.action} IN ('rule_changed', 'rule_auto_changed', 'deals_assigned', 'deals_unassigned', 'access_changed')`,
+    ),
+    index('crm_pipeline_activity_feed_idx').on(table.pipelineId, table.createdAt.desc(), table.id.desc()),
+    index('crm_pipeline_activity_run_idx')
+      .on(table.pipelineId, table.runId)
+      .where(sql`${table.runId} IS NOT NULL`),
+    index('crm_pipeline_activity_actor_idx').on(table.actorId),
   ],
 );
 

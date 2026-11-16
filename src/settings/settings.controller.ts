@@ -11,16 +11,19 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { DRIZZLE, DrizzleDb } from '../database.module';
 import { access, accessItems, crmDeals, crmPipelines, NewUserRow, UserRow, users } from '../schema';
 import { UsersService } from '../users/users.service';
+import type { AuthUser } from '../auth/auth.service';
+import { logPipelineActivities, PipelineActivityEntry } from '../crm/pipeline-activity';
 import { CheckUserAvailabilityDto } from './dto/check-user-availability.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -196,7 +199,10 @@ export class SettingsController {
 
   @Delete('users/:id')
   @Roles('superadmin', 'superuser')
-  async deleteUser(@Param('id') id: string): Promise<{ deleted: string }> {
+  async deleteUser(
+    @Req() req: { user: AuthUser },
+    @Param('id') id: string,
+  ): Promise<{ deleted: string }> {
     const existing = await this.db.query.users.findFirst({ where: (u, { eq }) => eq(u.id, id) });
     if (!existing) throw new BadRequestException('User not found.');
     if (existing.role === 'superadmin' || existing.role === 'superuser') {
@@ -204,6 +210,12 @@ export class SettingsController {
     }
     try {
       await this.db.transaction(async (tx) => {
+        // Per-pipeline counts first, for the pipeline history (WI-1b).
+        const owned = await tx
+          .select({ pipelineId: crmDeals.pipelineId, count: sql<number>`count(*)::int` })
+          .from(crmDeals)
+          .where(eq(crmDeals.assignedUserId, id))
+          .groupBy(crmDeals.pipelineId);
         // Their deals become unassigned, so nothing records how they were assigned any more.
         await tx
           .update(crmDeals)
@@ -211,10 +223,47 @@ export class SettingsController {
           .where(eq(crmDeals.assignedUserId, id));
         // A pipeline that sent every new deal to this user falls back to manual,
         // same as removing the single-user target from the pipeline's access list.
-        await tx
+        const reset = await tx
           .update(crmPipelines)
           .set({ dealAssignmentMethod: 'manual', dealAssignmentUserId: null, updatedAt: new Date() })
-          .where(eq(crmPipelines.dealAssignmentUserId, id));
+          .where(eq(crmPipelines.dealAssignmentUserId, id))
+          .returning({ id: crmPipelines.id });
+
+        // One history row per pipeline where the delete unassigned deals or reset the rule.
+        const countByPipeline = new Map(owned.map((row) => [row.pipelineId, row.count]));
+        const resetIds = new Set(reset.map((row) => row.id));
+        const actor = { id: req.user.id, username: req.user.username };
+        const entries: PipelineActivityEntry[] = [
+          ...[...resetIds].map((pipelineId) => ({
+            pipelineId,
+            action: 'rule_auto_changed' as const,
+            actor,
+            meta: {
+              fromMethod: 'single_user',
+              toMethod: 'manual',
+              userId: id,
+              username: existing.username,
+              reason: 'user_deleted',
+              dealsUnassigned: countByPipeline.get(pipelineId) ?? 0,
+            },
+          })),
+          ...owned
+            .filter((row) => !resetIds.has(row.pipelineId))
+            .map((row) => ({
+              pipelineId: row.pipelineId,
+              action: 'deals_unassigned' as const,
+              actor,
+              meta: {
+                source: null,
+                userId: id,
+                username: existing.username,
+                count: row.count,
+                reason: 'user_deleted',
+              },
+            })),
+        ];
+        await logPipelineActivities(tx, entries);
+
         await tx.delete(users).where(eq(users.id, id));
       });
     } catch (error) {

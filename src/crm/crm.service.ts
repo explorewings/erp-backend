@@ -28,6 +28,7 @@ import {
 import { CreateCrmPipelineDto } from './dto/create-pipeline.dto';
 import { isUniqueViolation } from './db-errors';
 import type { CrmTx } from './crm-assignment.service';
+import { logPipelineActivity } from './pipeline-activity';
 
 function toStageResponse(stage: CrmPipelineStageRow) {
   return {
@@ -458,6 +459,22 @@ export class CrmService {
           .insert(crmPipelineUsers)
           .values(plan.added.map((row) => ({ pipelineId: pipeline.id, userId: row.id })))
           .onConflictDoNothing();
+      }
+
+      if (plan.added.length > 0 || plan.removedIds.length > 0) {
+        await logPipelineActivity(tx, {
+          pipelineId: pipeline.id,
+          action: 'access_changed',
+          actor: user,
+          meta: {
+            added: plan.added
+              .map(({ id, username }) => ({ userId: id, username }))
+              .sort((a, b) => a.username.localeCompare(b.username)),
+            removed: plan.removed.map(({ userId, username, dealCount }) => ({ userId, username, dealCount })),
+            dealsUnassigned: unassignedCount,
+            ...(ruleChangedTo ? { ruleChangedTo } : {}),
+          },
+        });
       }
 
       return {

@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { CrmUser } from './crm-access';
 import { CrmAssignmentService } from './crm-assignment.service';
 import { DistributeCrmDealsDto } from './dto/distribute-deals.dto';
+import { ListCrmPipelineActivityDto } from './dto/list-pipeline-activity.dto';
 import { UnassignCrmDealsBySourceDto } from './dto/unassign-by-source.dto';
 import { UpdateCrmDealAssignmentDto } from './dto/update-deal-assignment.dto';
 
@@ -27,6 +28,16 @@ export class CrmAssignmentController {
     return this.assignment.getOverview(pipelineId, req.user);
   }
 
+  /** Drawer history (WI-1b), newest first, paged by run. Any pipeline viewer. */
+  @Get(':pipelineId/activity')
+  activity(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Query() query: ListCrmPipelineActivityDto,
+  ) {
+    return this.assignment.listActivity(pipelineId, query, req.user);
+  }
+
   /** Save the pipeline's rule; new deals follow it from then on. */
   @Roles('superadmin', 'superuser')
   @Patch(':pipelineId/deal-assignment')
@@ -46,7 +57,7 @@ export class CrmAssignmentController {
     @Param('pipelineId', ParseIntPipe) pipelineId: number,
     @Body() dto: DistributeCrmDealsDto,
   ) {
-    return this.assignment.distributeUnassigned(pipelineId, dto.method, dto.userId, req.user);
+    return this.assignment.distributeUnassigned(pipelineId, dto.method, dto.userId, req.user, dto.runId);
   }
 
   /** Unassign the next chunk (≤ 100) of deals assigned by `source`, optionally only one owner's. */
@@ -57,6 +68,6 @@ export class CrmAssignmentController {
     @Param('pipelineId', ParseIntPipe) pipelineId: number,
     @Body() dto: UnassignCrmDealsBySourceDto,
   ) {
-    return this.assignment.unassignBySource(pipelineId, dto.source, dto.userId, req.user);
+    return this.assignment.unassignBySource(pipelineId, dto.source, dto.userId, req.user, dto.runId);
   }
 }
