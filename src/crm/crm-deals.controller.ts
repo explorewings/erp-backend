@@ -7,18 +7,21 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/jwt.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles, RolesGuard } from '../auth/guards/roles.guard';
 import { MenuAccess, MenuAccessGuard } from '../access/menu-access.guard';
 import { CrmUser } from './crm-access';
 import { CrmDealsService } from './crm-deals.service';
 import { AssignCrmDealDto } from './dto/assign-deal.dto';
 import { AddExistingCrmDealsDto } from './dto/add-existing-deals.dto';
+import { CrmBoardQueryDto, CrmDealIdsQueryDto, CrmStageDealsQueryDto } from './dto/board-query.dto';
 import { CreateCrmDealDto } from './dto/create-deal.dto';
 import { MoveCrmDealDto } from './dto/move-deal.dto';
+import { TransferCrmDealsDto } from './dto/transfer-deals.dto';
 
 type AuthedRequest = { user: CrmUser };
 
@@ -39,6 +42,37 @@ export class CrmDealsController {
   @Get('pipelines/:pipelineId/deals')
   list(@Req() req: AuthedRequest, @Param('pipelineId', ParseIntPipe) pipelineId: number) {
     return this.deals.listDeals(pipelineId, req.user);
+  }
+
+  /** Kanban board: first 100 deals of every stage + each stage's total; `q` searches clients. */
+  @Get('pipelines/:pipelineId/board')
+  board(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Query() query: CrmBoardQueryDto,
+  ) {
+    return this.deals.listBoard(pipelineId, query.q, req.user);
+  }
+
+  /** Next 100 deals of one stage (scrolling a column). */
+  @Get('pipelines/:pipelineId/stages/:stageId/deals')
+  stageDeals(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Param('stageId', ParseIntPipe) stageId: number,
+    @Query() query: CrmStageDealsQueryDto,
+  ) {
+    return this.deals.listStageDeals(pipelineId, stageId, query, req.user);
+  }
+
+  /** Ids of every deal in the given stages (Deal transfer). */
+  @Get('pipelines/:pipelineId/deal-ids')
+  dealIds(
+    @Req() req: AuthedRequest,
+    @Param('pipelineId', ParseIntPipe) pipelineId: number,
+    @Query() query: CrmDealIdsQueryDto,
+  ) {
+    return this.deals.listDealIdsByStages(pipelineId, query.stageIds, req.user);
   }
 
   /** Active users who have both CRM menu access and access to this pipeline. */
@@ -68,6 +102,13 @@ export class CrmDealsController {
     @Body() dto: AddExistingCrmDealsDto,
   ) {
     return this.deals.addExistingClients(pipelineId, dto.clientIds, req.user);
+  }
+
+  /** Bulk move (same deals) or copy (new deals) into another pipeline. Super roles only for now. */
+  @Roles('superadmin', 'superuser')
+  @Post('deals/transfer')
+  transfer(@Req() req: AuthedRequest, @Body() dto: TransferCrmDealsDto) {
+    return this.deals.transferDeals(dto, req.user);
   }
 
   /** Move a deal to another stage of its pipeline. */
